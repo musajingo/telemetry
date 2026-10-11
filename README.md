@@ -258,6 +258,11 @@ for (key, value) in telemetry::current_trace_headers() {
 
 It is empty when there is no active trace, so it is always safe to call.
 
+Baggage is forwarded as-is to every downstream hop (and, depending on the
+backend, recorded), so never put a secret or a token in it. Inbound baggage is
+only picked up where inbound trace context is trusted, and
+`OTEL_PROPAGATORS=tracecontext` stops baggage from being carried at all.
+
 ## Short-lived and frozen processes
 
 Batching exporters only help if the batch gets sent. AWS Lambda freezes the
