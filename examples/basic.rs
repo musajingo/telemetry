@@ -16,8 +16,8 @@
 //!
 //! Without an endpoint it only logs to stdout.
 
-use opentelemetry::{KeyValue, global};
 use telemetry::TelemetryConfig;
+use telemetry::opentelemetry::{KeyValue, global};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

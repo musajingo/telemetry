@@ -20,23 +20,15 @@ use crate::guard::TelemetryGuard;
 /// Everything [`try_init`](Self::try_init) needs to set telemetry up.
 ///
 /// Start from [`new`](Self::new) for pure defaults or [`from_env`](Self::from_env)
-/// to also read the environment, then adjust with the setters. For the
-/// settings read by [`with_env`](Self::with_env), precedence is call order:
-/// a setter called after
-/// [`with_env`](Self::with_env) overrides that setting's variable, one called
-/// before it acts as a fallback. A default setter does not override a
-/// per-signal variable; the `..._for_all` setters do.
-/// Resource attributes, sampling and metric intervals use SDK defaults during
-/// init; explicit code settings override those defaults regardless of call order.
+/// to also read the environment, then adjust with the setters. Precedence is
+/// call order, per setting: [`with_env`](Self::with_env) overrides setters
+/// called before it, setters called after it override the environment.
 ///
 /// ```
 /// use telemetry::{LogFormat, TelemetryConfig};
 ///
 /// let config = TelemetryConfig::new(env!("CARGO_PKG_NAME"))
-///     .log_filter("warn")
-///     // Anything set above can still be overridden by the environment...
 ///     .with_env()
-///     // ...and anything set below wins over its own variable.
 ///     .log_format(LogFormat::Pretty);
 /// # let _ = config;
 /// ```
@@ -66,18 +58,13 @@ pub struct TelemetryConfig {
 
 impl TelemetryConfig {
     /// A config with the given service name and default settings. Reads no
-    /// environment variables.
+    /// environment variables itself (the SDK still reads its standard ones
+    /// during init; see [`with_env`](Self::with_env)).
     ///
     /// The defaults: OTLP export (inactive until an endpoint is set) over
     /// gRPC when the `otlp-grpc` feature is on, the SDK's sampler and metric
     /// interval, text logs, both filters at `info`, both W3C propagators,
     /// inbound trace context not trusted, panic hook installed.
-    ///
-    /// During init the SDK still reads its standard sampler, resource and
-    /// exporter variables. Code resource setters, [`sample_ratio`](Self::sample_ratio)
-    /// and [`metrics_export_interval`](Self::metrics_export_interval) override
-    /// those defaults; see [`with_env`](Self::with_env) and the crate's
-    /// environment table for precedence.
     pub fn new(service_name: impl Into<String>) -> Self {
         Self {
             service_name: service_name.into(),
@@ -118,9 +105,9 @@ impl TelemetryConfig {
     /// | `OTEL_SERVICE_NAME` | [`service_name`](Self::service_name) |
     /// | `OTEL_EXPORTER_OTLP_ENDPOINT` | [`otlp_endpoint`](Self::otlp_endpoint) |
     /// | `OTEL_EXPORTER_OTLP_PROTOCOL` | [`otlp_protocol`](Self::otlp_protocol): `grpc` or `http/protobuf` |
-    /// | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | the matching `otlp_*_endpoint` setter; exact per-signal destination |
-    /// | `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL`, `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL`, `OTEL_EXPORTER_OTLP_LOGS_PROTOCOL` | the matching `otlp_*_protocol` setter; per-signal transport |
-    /// | `OTEL_SDK_DISABLED` | case-insensitive `true` selects [`Exporter::None`]; other values have no effect |
+    /// | `OTEL_EXPORTER_OTLP_<SIGNAL>_ENDPOINT` | [`otlp_traces_endpoint`](Self::otlp_traces_endpoint) and siblings |
+    /// | `OTEL_EXPORTER_OTLP_<SIGNAL>_PROTOCOL` | [`otlp_traces_protocol`](Self::otlp_traces_protocol) and siblings |
+    /// | `OTEL_SDK_DISABLED` | `true` selects [`Exporter::None`] |
     /// | `RUST_LOG` | [`log_filter`](Self::log_filter) |
     /// | `TELEMETRY_TRACE_FILTER` | [`trace_filter`](Self::trace_filter) |
     /// | `OTEL_PROPAGATORS` | [`propagators`](Self::propagators) |
@@ -128,25 +115,11 @@ impl TelemetryConfig {
     /// | `TELEMETRY_TRUST_INCOMING_TRACE` | [`trust_incoming_trace`](Self::trust_incoming_trace) |
     /// | `TELEMETRY_STRICT` | [`strict`](Self::strict) |
     ///
-    /// Each listed setter called after this overlay overrides its own
-    /// variable. For per-signal endpoints and protocols, use
-    /// [`otlp_traces_endpoint`](Self::otlp_traces_endpoint),
-    /// [`otlp_metrics_endpoint`](Self::otlp_metrics_endpoint),
-    /// [`otlp_logs_endpoint`](Self::otlp_logs_endpoint) and their protocol
-    /// counterparts. The default setters preserve these overrides; the
-    /// `..._for_all` setters clear them. `OTEL_SDK_DISABLED=true` can be
-    /// overridden with [`exporter`](Self::exporter) after this overlay.
-    ///
-    /// `RUST_LOG` is a Rust logging convention; `TELEMETRY_*` variables are
-    /// crate-specific options without standard OpenTelemetry equivalents.
-    ///
-    /// The SDK reads `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER`,
-    /// `OTEL_TRACES_SAMPLER_ARG`, `OTEL_METRIC_EXPORT_INTERVAL` and exporter
-    /// tuning variables during init, even without this overlay. Configured
-    /// resource attributes, [`sample_ratio`](Self::sample_ratio) and
-    /// [`metrics_export_interval`](Self::metrics_export_interval) override
-    /// their SDK environment defaults regardless of call order. See the
-    /// crate documentation's environment table for every supported variable.
+    /// Separately, the SDK reads its own standard variables during init
+    /// (`OTEL_RESOURCE_ATTRIBUTES`, the sampler pair, the metric interval and
+    /// exporter tuning), even without this overlay; the matching code setters
+    /// override those regardless of call order. The crate documentation has
+    /// the full table.
     pub fn with_env(self) -> Self {
         self.with_env_from(|key| std::env::var(key).ok())
     }
@@ -228,31 +201,25 @@ impl TelemetryConfig {
         self
     }
 
-    /// Sets `service.version`. A library cannot see the version of the binary
-    /// it is linked into, so pass `env!("CARGO_PKG_VERSION")` from the
-    /// application. Overrides `service.version` in `OTEL_RESOURCE_ATTRIBUTES`
-    /// regardless of where [`with_env`](Self::with_env) is called. Left
-    /// unset, the SDK uses that resource attribute if present, or omits it.
+    /// Sets `service.version`; pass `env!("CARGO_PKG_VERSION")` from the
+    /// application. Wins over `OTEL_RESOURCE_ATTRIBUTES`. Left unset, that
+    /// variable applies, or the attribute is omitted.
     pub fn service_version(mut self, version: impl Into<String>) -> Self {
         self.service_version = Some(version.into());
         self
     }
 
     /// Sets `deployment.environment.name`, e.g. `production` or `staging`.
-    /// Overrides `deployment.environment.name` in `OTEL_RESOURCE_ATTRIBUTES`
-    /// regardless of where [`with_env`](Self::with_env) is called. Left
-    /// unset, the SDK uses that resource attribute if present, or omits it.
+    /// Wins over `OTEL_RESOURCE_ATTRIBUTES`. Left unset, that variable
+    /// applies, or the attribute is omitted.
     pub fn environment(mut self, environment: impl Into<String>) -> Self {
         self.environment = Some(environment.into());
         self
     }
 
-    /// Adds one more resource attribute, e.g. `cloud.region`. Overrides the
-    /// same key in `OTEL_RESOURCE_ATTRIBUTES` regardless of call order.
-    /// For duplicate calls to this setter, the last one wins. Attributes
-    /// added here also take precedence over [`service_name`](Self::service_name),
-    /// [`service_version`](Self::service_version) and
-    /// [`environment`](Self::environment), regardless of call order.
+    /// Adds one more resource attribute, e.g. `cloud.region`. For a key set
+    /// several ways, the last call to this setter wins, over
+    /// `OTEL_RESOURCE_ATTRIBUTES` and over the dedicated setters.
     pub fn resource_attribute(mut self, key: impl Into<Key>, value: impl Into<Value>) -> Self {
         self.resource_attributes.push(KeyValue::new(key, value));
         self
@@ -350,11 +317,8 @@ impl TelemetryConfig {
     /// sampler is parent-based, so a sampled upstream trace is always
     /// continued.
     ///
-    /// Left unset, the SDK default applies: `OTEL_TRACES_SAMPLER` and
-    /// `OTEL_TRACES_SAMPLER_ARG` if present, otherwise every new root trace
-    /// is sampled.
-    /// Setting a ratio overrides both standard variables regardless of
-    /// where [`with_env`](Self::with_env) is called.
+    /// Wins over `OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG`. Left
+    /// unset, those apply, or every new root trace is sampled.
     pub fn sample_ratio(mut self, ratio: f64) -> Self {
         if !ratio.is_nan() {
             self.sample_ratio = Some(ratio.clamp(0.0, 1.0));
@@ -362,12 +326,9 @@ impl TelemetryConfig {
         self
     }
 
-    /// Sets how often metrics are exported.
-    ///
-    /// Left unset, the SDK default applies: `OTEL_METRIC_EXPORT_INTERVAL`
-    /// (milliseconds) if present, otherwise 60 seconds.
-    /// A nonzero interval overrides that variable regardless of where
-    /// [`with_env`](Self::with_env) is called. Zero leaves the SDK default.
+    /// Sets how often metrics are exported. A nonzero interval wins over
+    /// `OTEL_METRIC_EXPORT_INTERVAL` (milliseconds); zero or unset leaves the
+    /// SDK default, 60 seconds.
     pub fn metrics_export_interval(mut self, interval: Duration) -> Self {
         self.metrics_export_interval = Some(interval);
         self

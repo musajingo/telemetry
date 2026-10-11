@@ -10,10 +10,9 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 /// Builds the global propagator from the standard `OTEL_PROPAGATORS` value: a
 /// comma-separated list drawn from `tracecontext`, `baggage` and `none`.
 ///
-/// Unset or blank, both W3C propagators are installed, which is the
-/// OpenTelemetry default. `none` turns propagation off entirely. Entries this
-/// crate does not ship (`b3`, `jaeger`, ...) are reported on stderr and
-/// skipped, as the specification asks.
+/// Unset or blank, both W3C propagators are installed (the OpenTelemetry
+/// default); `none` turns propagation off. Entries this crate does not ship
+/// (`b3`, `jaeger`, ...) are reported on stderr and skipped.
 pub(crate) fn propagator_from_spec(spec: Option<&str>) -> TextMapCompositePropagator {
     let spec = spec
         .map(str::trim)

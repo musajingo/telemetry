@@ -8,18 +8,13 @@ use tower_http::trace::MakeSpan;
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-/// A tower-http [`MakeSpan`] that can continue an upstream W3C trace.
+/// A tower-http [`MakeSpan`] that starts a `request` span, joining the
+/// caller's trace when inbound trace context is trusted (see
+/// [`TelemetryConfig::trust_incoming_trace`](crate::TelemetryConfig::trust_incoming_trace))
+/// and starting a fresh one otherwise.
 ///
-/// When inbound trace context is trusted (see
-/// [`TelemetryConfig::trust_incoming_trace`](crate::TelemetryConfig::trust_incoming_trace)),
-/// it extracts the incoming `traceparent`/`tracestate` through the globally
-/// registered propagator and attaches the result as the parent of the request
-/// span. A caller that already has a trace, such as a frontend rendering on
-/// the server or another service, then shares one distributed trace with this
-/// service. With no incoming context the request starts a fresh root trace.
-///
-/// Headers are never recorded on the span: they carry `Authorization` tokens
-/// and session cookies, which must not reach stdout logs or the trace store.
+/// Headers are never recorded on the span: they carry tokens and cookies,
+/// which must not reach logs or the trace store.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OtelMakeSpan {
     trust_override: Option<bool>,
