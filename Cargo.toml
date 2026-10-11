@@ -25,8 +25,9 @@ otlp-grpc-tls = ["otlp-grpc", "opentelemetry-otlp/tls", "opentelemetry-otlp/tls-
 otlp-http-tls = ["otlp-http", "opentelemetry-otlp/reqwest-rustls"]
 # `OtelMakeSpan` and `OtelOnResponse` for tower-http's `TraceLayer`.
 tower-http    = ["dep:tower-http", "dep:http", "dep:opentelemetry-http"]
-# `LogFormat::Json` for the stdout log layer.
-json          = ["tracing-subscriber/json"]
+# `LogFormat::Json` for the stdout log layer, with `trace_id`/`span_id` on
+# every line emitted inside a trace.
+json          = ["dep:json-subscriber"]
 # `Exporter::Stdout` and `init_testing_telemetry`: print telemetry instead of
 # sending it to a collector.
 stdout        = ["dep:opentelemetry-stdout"]
@@ -47,9 +48,14 @@ opentelemetry-http                 = { version = "0.32", optional = true }
 # tower-http version the application uses (axum 0.8 is on 0.6).
 tower-http                         = { version = "0.6", features = ["trace"], optional = true }
 http                               = { version = "1", optional = true }
+# The JSON log layer. The feature pins it to the same tracing-opentelemetry
+# version as above, which is what lets it read the otel span extensions.
+json-subscriber                    = { version = "0.3.1", features = ["tracing-opentelemetry-0-33"], optional = true }
 
 [dev-dependencies]
 # In-memory exporters for asserting on what the layers produce.
 opentelemetry_sdk = { version = "0.32", features = ["testing"] }
 # The OTLP/gRPC exporters are built inside a Tokio runtime.
 tokio = { version = "1.42", features = ["macros", "rt-multi-thread"] }
+# For asserting on the JSON log lines.
+serde_json = "1"

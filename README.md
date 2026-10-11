@@ -23,6 +23,9 @@ usual.
   records from `tracing` events (carrying the trace and span id of the span
   they were emitted in), and metrics from both `opentelemetry::global::meter`
   and `tracing` fields.
+- **JSON log lines carry `trace_id` and `span_id`** whenever they are emitted
+  inside a trace, so logs scraped from stdout by a shipper can be joined to
+  the trace they belong to without going through OTLP.
 - **Boots with or without a collector.** With no endpoint configured the
   service just logs to stdout. An exporter that cannot be built disables that
   one signal instead of taking the service down.
@@ -323,7 +326,7 @@ several tests may race to initialize it, use
 | `otlp-grpc-tls` | no      | `https://` endpoints over gRPC, using ring and the platform's root store                         |
 | `otlp-http-tls` | no      | `https://` endpoints over HTTP, using rustls (aws-lc-rs) and the platform's certificate verifier |
 | `tower-http`    | yes     | `OtelMakeSpan` and `OtelOnResponse` (pulls in `tower-http` and `http`)                           |
-| `json`          | yes     | `LogFormat::Json`                                                                                |
+| `json`          | yes     | `LogFormat::Json`, with `trace_id`/`span_id` on lines in a trace (pulls in `json-subscriber`)    |
 | `stdout`        | no      | `Exporter::Stdout` and `init_testing_telemetry`                                                  |
 
 A worker with no HTTP server can drop the tower-http stack:
