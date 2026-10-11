@@ -41,7 +41,7 @@ Not on crates.io yet; depend on it from GitHub, pinned to a tag:
 
 ```toml
 [dependencies]
-telemetry = { git = "https://github.com/musamahmoudjingo/telemetry", tag = "v0.1.0" }
+telemetry = { git = "https://github.com/musajingo/telemetry", tag = "v0.1.0" }
 tracing = "0.1"
 ```
 
@@ -176,7 +176,7 @@ With both compiled in, gRPC is used unless configured otherwise. With only
 `otlp-http`, HTTP is the default and `tonic` is not compiled at all:
 
 ```toml
-telemetry = { git = "https://github.com/musamahmoudjingo/telemetry", tag = "v0.1.0", default-features = false, features = ["otlp-http", "otlp-http-tls"] }
+telemetry = { git = "https://github.com/musajingo/telemetry", tag = "v0.1.0", default-features = false, features = ["otlp-http", "otlp-http-tls"] }
 ```
 
 Over HTTP the standard `/v1/traces`, `/v1/metrics` and `/v1/logs` paths are
@@ -272,7 +272,7 @@ and `init_testing_telemetry` is a one-call preset for tests:
 
 ```toml
 [dev-dependencies]
-telemetry = { git = "https://github.com/musamahmoudjingo/telemetry", tag = "v0.1.0", features = ["stdout"] }
+telemetry = { git = "https://github.com/musajingo/telemetry", tag = "v0.1.0", features = ["stdout"] }
 ```
 
 ```rust,ignore
