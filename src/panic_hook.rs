@@ -15,8 +15,9 @@ use std::sync::Once;
 /// during init unless the config opts out. Idempotent, so repeated calls
 /// never stack hooks.
 ///
-/// The backtrace is captured only when `RUST_BACKTRACE` is set. `capture()`
-/// is a no-op otherwise, which keeps the hook cheap on the default path.
+/// `Backtrace::capture()` consults Rust's `RUST_LIB_BACKTRACE`, falling back
+/// to `RUST_BACKTRACE`. Capture is disabled when neither enables it, keeping
+/// the hook cheap on the default path.
 pub(crate) fn install_panic_hook() {
     static INSTALLED: Once = Once::new();
 

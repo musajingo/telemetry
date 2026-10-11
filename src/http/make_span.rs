@@ -87,8 +87,8 @@ mod tests {
     fn requests_before_init_do_not_pin_the_trust_setting() {
         global::set_text_map_propagator(TraceContextPropagator::new());
         let provider = SdkTracerProvider::builder().build();
-        let subscriber = tracing_subscriber::registry()
-            .with(OpenTelemetryLayer::new(provider.tracer("svc")));
+        let subscriber =
+            tracing_subscriber::registry().with(OpenTelemetryLayer::new(provider.tracer("svc")));
         let _default = tracing::subscriber::set_default(subscriber);
 
         let request = || {
@@ -101,9 +101,8 @@ mod tests {
                 .body(())
                 .expect("a request")
         };
-        let trace_id_of = |span: &tracing::Span| {
-            span.context().span().span_context().trace_id().to_string()
-        };
+        let trace_id_of =
+            |span: &tracing::Span| span.context().span().span_context().trace_id().to_string();
 
         // Before init nothing is trusted: a fresh root trace...
         let span = OtelMakeSpan::default().make_span(&request());
@@ -128,8 +127,8 @@ mod tests {
     fn a_per_layer_trust_override_continues_the_inbound_trace() {
         global::set_text_map_propagator(TraceContextPropagator::new());
         let provider = SdkTracerProvider::builder().build();
-        let subscriber = tracing_subscriber::registry()
-            .with(OpenTelemetryLayer::new(provider.tracer("svc")));
+        let subscriber =
+            tracing_subscriber::registry().with(OpenTelemetryLayer::new(provider.tracer("svc")));
         let _default = tracing::subscriber::set_default(subscriber);
 
         let request = http::Request::builder()

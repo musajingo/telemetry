@@ -161,7 +161,9 @@ mod tests {
             .build();
         let guard = guard_with(provider);
 
-        guard.force_flush().expect("flushing healthy providers works");
+        guard
+            .force_flush()
+            .expect("flushing healthy providers works");
         guard.shutdown().expect("shutting down works");
     }
 

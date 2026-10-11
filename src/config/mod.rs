@@ -1,7 +1,6 @@
 //! Telemetry configuration: the config builder and the types it is built
 //! from, one per file.
 
-mod endpoint;
 mod exporter;
 mod log_format;
 mod protocol;

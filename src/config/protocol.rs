@@ -44,13 +44,4 @@ impl Protocol {
             None
         }
     }
-
-    pub(crate) fn default_port(self) -> &'static str {
-        match self {
-            #[cfg(feature = "otlp-grpc")]
-            Self::Grpc => "4317",
-            #[cfg(feature = "otlp-http")]
-            Self::HttpProtobuf => "4318",
-        }
-    }
 }

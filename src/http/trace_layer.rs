@@ -49,8 +49,8 @@ mod tests {
         let provider = SdkTracerProvider::builder()
             .with_simple_exporter(exporter.clone())
             .build();
-        let subscriber = tracing_subscriber::registry()
-            .with(OpenTelemetryLayer::new(provider.tracer("svc")));
+        let subscriber =
+            tracing_subscriber::registry().with(OpenTelemetryLayer::new(provider.tracer("svc")));
         let _default = tracing::subscriber::set_default(subscriber);
 
         let service = tower::ServiceBuilder::new()

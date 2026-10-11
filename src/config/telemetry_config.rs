@@ -10,7 +10,6 @@ use opentelemetry_semantic_conventions::{
     attribute::{DEPLOYMENT_ENVIRONMENT_NAME, SERVICE_NAME, SERVICE_VERSION},
 };
 
-use super::endpoint::Endpoint;
 use super::exporter::Exporter;
 use super::log_format::LogFormat;
 use super::protocol::Protocol;
@@ -21,17 +20,20 @@ use crate::guard::TelemetryGuard;
 /// Everything [`try_init`](Self::try_init) needs to set telemetry up.
 ///
 /// Start from [`new`](Self::new) for pure defaults or [`from_env`](Self::from_env)
-/// to also read the environment, then adjust with the setters. Precedence is
-/// simply call order, per setting: a setter called after
+/// to also read the environment, then adjust with the setters. For the
+/// settings read by [`with_env`](Self::with_env), precedence is call order:
+/// a setter called after
 /// [`with_env`](Self::with_env) overrides that setting's variable, one called
 /// before it acts as a fallback. A default setter does not override a
 /// per-signal variable; the `..._for_all` setters do.
+/// Resource attributes, sampling and metric intervals use SDK defaults during
+/// init; explicit code settings override those defaults regardless of call order.
 ///
 /// ```
 /// use telemetry::{LogFormat, TelemetryConfig};
 ///
 /// let config = TelemetryConfig::new(env!("CARGO_PKG_NAME"))
-///     .service_version(env!("CARGO_PKG_VERSION"))
+///     .log_filter("warn")
 ///     // Anything set above can still be overridden by the environment...
 ///     .with_env()
 ///     // ...and anything set below wins over its own variable.
@@ -46,7 +48,7 @@ pub struct TelemetryConfig {
     pub(crate) environment: Option<String>,
     pub(crate) resource_attributes: Vec<KeyValue>,
     pub(crate) exporter: Exporter,
-    pub(crate) otlp_endpoint: Option<Endpoint>,
+    pub(crate) otlp_endpoint: Option<String>,
     pub(crate) otlp_protocol: Option<Protocol>,
     pub(crate) otlp_traces: SignalOverride,
     pub(crate) otlp_metrics: SignalOverride,
@@ -70,6 +72,12 @@ impl TelemetryConfig {
     /// gRPC when the `otlp-grpc` feature is on, the SDK's sampler and metric
     /// interval, text logs, both filters at `info`, both W3C propagators,
     /// inbound trace context not trusted, panic hook installed.
+    ///
+    /// During init the SDK still reads its standard sampler, resource and
+    /// exporter variables. Code resource setters, [`sample_ratio`](Self::sample_ratio)
+    /// and [`metrics_export_interval`](Self::metrics_export_interval) override
+    /// those defaults; see [`with_env`](Self::with_env) and the crate's
+    /// environment table for precedence.
     pub fn new(service_name: impl Into<String>) -> Self {
         Self {
             service_name: service_name.into(),
@@ -100,21 +108,19 @@ impl TelemetryConfig {
         Self::new(service_name).with_env()
     }
 
-    /// Overlays every setting that is present in the environment on top of
-    /// the current values. Unset, blank and unparsable variables leave the
+    /// Overlays the crate-managed environment settings on top of the
+    /// current values. Unset, blank and unparsable variables leave the
     /// current value alone — except the filter and propagator variables,
     /// which are stored as given and validated during init.
     ///
     /// | Variable | Setting |
     /// | --- | --- |
     /// | `OTEL_SERVICE_NAME` | [`service_name`](Self::service_name) |
-    /// | `OTEL_SERVICE_VERSION` | [`service_version`](Self::service_version) |
-    /// | `ENVIRONMENT` | [`environment`](Self::environment) |
     /// | `OTEL_EXPORTER_OTLP_ENDPOINT` | [`otlp_endpoint`](Self::otlp_endpoint) |
-    /// | `OTEL_HOST`, `OTEL_PORT` | endpoint `http://{host}:{port}`, when the variable above is unset. The port defaults to the protocol's: `4317` for gRPC, `4318` for HTTP |
     /// | `OTEL_EXPORTER_OTLP_PROTOCOL` | [`otlp_protocol`](Self::otlp_protocol): `grpc` or `http/protobuf` |
-    /// | `OTEL_SDK_DISABLED=true` | [`Exporter::None`] |
-    /// | `OTEL_TRACES_SAMPLE_RATIO` | [`sample_ratio`](Self::sample_ratio) |
+    /// | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | the matching `otlp_*_endpoint` setter; exact per-signal destination |
+    /// | `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL`, `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL`, `OTEL_EXPORTER_OTLP_LOGS_PROTOCOL` | the matching `otlp_*_protocol` setter; per-signal transport |
+    /// | `OTEL_SDK_DISABLED` | case-insensitive `true` selects [`Exporter::None`]; other values have no effect |
     /// | `RUST_LOG` | [`log_filter`](Self::log_filter) |
     /// | `TELEMETRY_TRACE_FILTER` | [`trace_filter`](Self::trace_filter) |
     /// | `OTEL_PROPAGATORS` | [`propagators`](Self::propagators) |
@@ -122,9 +128,25 @@ impl TelemetryConfig {
     /// | `TELEMETRY_TRUST_INCOMING_TRACE` | [`trust_incoming_trace`](Self::trust_incoming_trace) |
     /// | `TELEMETRY_STRICT` | [`strict`](Self::strict) |
     ///
-    /// The OpenTelemetry SDK reads its own variables during init; see the
-    /// crate documentation for the list. Everything this crate reads goes
-    /// through this overlay.
+    /// Each listed setter called after this overlay overrides its own
+    /// variable. For per-signal endpoints and protocols, use
+    /// [`otlp_traces_endpoint`](Self::otlp_traces_endpoint),
+    /// [`otlp_metrics_endpoint`](Self::otlp_metrics_endpoint),
+    /// [`otlp_logs_endpoint`](Self::otlp_logs_endpoint) and their protocol
+    /// counterparts. The default setters preserve these overrides; the
+    /// `..._for_all` setters clear them. `OTEL_SDK_DISABLED=true` can be
+    /// overridden with [`exporter`](Self::exporter) after this overlay.
+    ///
+    /// `RUST_LOG` is a Rust logging convention; `TELEMETRY_*` variables are
+    /// crate-specific options without standard OpenTelemetry equivalents.
+    ///
+    /// The SDK reads `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER`,
+    /// `OTEL_TRACES_SAMPLER_ARG`, `OTEL_METRIC_EXPORT_INTERVAL` and exporter
+    /// tuning variables during init, even without this overlay. Configured
+    /// resource attributes, [`sample_ratio`](Self::sample_ratio) and
+    /// [`metrics_export_interval`](Self::metrics_export_interval) override
+    /// their SDK environment defaults regardless of call order. See the
+    /// crate documentation's environment table for every supported variable.
     pub fn with_env(self) -> Self {
         self.with_env_from(|key| std::env::var(key).ok())
     }
@@ -140,20 +162,8 @@ impl TelemetryConfig {
         if let Some(name) = var("OTEL_SERVICE_NAME") {
             self.service_name = name;
         }
-        if let Some(version) = var("OTEL_SERVICE_VERSION") {
-            self.service_version = Some(version);
-        }
-        if let Some(environment) = var("ENVIRONMENT") {
-            self.environment = Some(environment);
-        }
-
         if let Some(endpoint) = var("OTEL_EXPORTER_OTLP_ENDPOINT") {
-            self.otlp_endpoint = Some(Endpoint::Url(endpoint));
-        } else if let Some(host) = var("OTEL_HOST") {
-            self.otlp_endpoint = Some(Endpoint::HostPort {
-                host,
-                port: var("OTEL_PORT"),
-            });
+            self.otlp_endpoint = Some(endpoint);
         }
         if let Some(value) = var("OTEL_EXPORTER_OTLP_PROTOCOL") {
             match Protocol::parse(&value) {
@@ -180,12 +190,8 @@ impl TelemetryConfig {
                 }
             }
         }
-        if var("OTEL_SDK_DISABLED").and_then(|v| parse_bool(&v)) == Some(true) {
+        if var("OTEL_SDK_DISABLED").is_some_and(|v| v.eq_ignore_ascii_case("true")) {
             self.exporter = Exporter::None;
-        }
-
-        if let Some(ratio) = var("OTEL_TRACES_SAMPLE_RATIO").and_then(|v| v.parse::<f64>().ok()) {
-            self = self.sample_ratio(ratio);
         }
 
         if let Some(filter) = var("RUST_LOG") {
@@ -224,26 +230,36 @@ impl TelemetryConfig {
 
     /// Sets `service.version`. A library cannot see the version of the binary
     /// it is linked into, so pass `env!("CARGO_PKG_VERSION")` from the
-    /// application. Left unset, the attribute is omitted.
+    /// application. Overrides `service.version` in `OTEL_RESOURCE_ATTRIBUTES`
+    /// regardless of where [`with_env`](Self::with_env) is called. Left
+    /// unset, the SDK uses that resource attribute if present, or omits it.
     pub fn service_version(mut self, version: impl Into<String>) -> Self {
         self.service_version = Some(version.into());
         self
     }
 
     /// Sets `deployment.environment.name`, e.g. `production` or `staging`.
-    /// Left unset, the attribute is omitted.
+    /// Overrides `deployment.environment.name` in `OTEL_RESOURCE_ATTRIBUTES`
+    /// regardless of where [`with_env`](Self::with_env) is called. Left
+    /// unset, the SDK uses that resource attribute if present, or omits it.
     pub fn environment(mut self, environment: impl Into<String>) -> Self {
         self.environment = Some(environment.into());
         self
     }
 
-    /// Adds one more resource attribute, e.g. `cloud.region`.
+    /// Adds one more resource attribute, e.g. `cloud.region`. Overrides the
+    /// same key in `OTEL_RESOURCE_ATTRIBUTES` regardless of call order.
+    /// For duplicate calls to this setter, the last one wins. Attributes
+    /// added here also take precedence over [`service_name`](Self::service_name),
+    /// [`service_version`](Self::service_version) and
+    /// [`environment`](Self::environment), regardless of call order.
     pub fn resource_attribute(mut self, key: impl Into<Key>, value: impl Into<Value>) -> Self {
         self.resource_attributes.push(KeyValue::new(key, value));
         self
     }
 
     /// Chooses where telemetry is exported. Defaults to [`Exporter::Otlp`].
+    /// Call after [`with_env`](Self::with_env) to override `OTEL_SDK_DISABLED`.
     pub fn exporter(mut self, exporter: Exporter) -> Self {
         self.exporter = exporter;
         self
@@ -258,7 +274,7 @@ impl TelemetryConfig {
     /// paths are appended to it. An `https://` endpoint needs the
     /// `otlp-grpc-tls` or `otlp-http-tls` feature.
     pub fn otlp_endpoint(mut self, endpoint: impl Into<String>) -> Self {
-        self.otlp_endpoint = Some(Endpoint::Url(endpoint.into()));
+        self.otlp_endpoint = Some(endpoint.into());
         self
     }
 
@@ -335,7 +351,10 @@ impl TelemetryConfig {
     /// continued.
     ///
     /// Left unset, the SDK default applies: `OTEL_TRACES_SAMPLER` and
-    /// `OTEL_TRACES_SAMPLER_ARG` if present, otherwise every trace is sampled.
+    /// `OTEL_TRACES_SAMPLER_ARG` if present, otherwise every new root trace
+    /// is sampled.
+    /// Setting a ratio overrides both standard variables regardless of
+    /// where [`with_env`](Self::with_env) is called.
     pub fn sample_ratio(mut self, ratio: f64) -> Self {
         if !ratio.is_nan() {
             self.sample_ratio = Some(ratio.clamp(0.0, 1.0));
@@ -347,6 +366,8 @@ impl TelemetryConfig {
     ///
     /// Left unset, the SDK default applies: `OTEL_METRIC_EXPORT_INTERVAL`
     /// (milliseconds) if present, otherwise 60 seconds.
+    /// A nonzero interval overrides that variable regardless of where
+    /// [`with_env`](Self::with_env) is called. Zero leaves the SDK default.
     pub fn metrics_export_interval(mut self, interval: Duration) -> Self {
         self.metrics_export_interval = Some(interval);
         self
@@ -445,7 +466,7 @@ impl TelemetryConfig {
     ///
     /// Fails, leaving every global untouched, when a global `tracing`
     /// subscriber is already installed, the configured log or trace filter
-    /// does not parse, [`Protocol::Grpc`] export is configured outside a
+    /// does not parse, `Protocol::Grpc` export is configured outside a
     /// Tokio runtime (which the gRPC client needs), or [`strict`](Self::strict)
     /// mode found that OTLP export will not happen.
     pub fn try_init(self) -> Result<TelemetryGuard, InitError> {
@@ -471,27 +492,12 @@ impl TelemetryConfig {
             .or_else(Protocol::preferred)?;
         let (endpoint, exact) = match &overrides.endpoint {
             Some(endpoint) => (endpoint.clone(), true),
-            None => (self.base_endpoint(protocol)?, false),
+            None => (self.otlp_endpoint.clone()?, false),
         };
         Some(SignalTarget {
             protocol,
             endpoint,
             exact,
-        })
-    }
-
-    /// The base endpoint resolved against a protocol's default port.
-    #[cfg_attr(
-        not(any(feature = "otlp-grpc", feature = "otlp-http")),
-        allow(dead_code)
-    )]
-    fn base_endpoint(&self, protocol: Protocol) -> Option<String> {
-        Some(match self.otlp_endpoint.as_ref()? {
-            Endpoint::Url(url) => url.clone(),
-            Endpoint::HostPort { host, port } => {
-                let port = port.as_deref().unwrap_or(protocol.default_port());
-                format!("http://{host}:{port}")
-            }
         })
     }
 
@@ -578,69 +584,44 @@ mod tests {
     #[test]
     fn the_environment_overrides_earlier_setters_and_yields_to_later_ones() {
         let config = overlay(
-            TelemetryConfig::new("fallback").service_version("0.0.1"),
-            &[
-                ("OTEL_SERVICE_NAME", "from-env"),
-                ("OTEL_SERVICE_VERSION", "9.9.9"),
-                ("ENVIRONMENT", "staging"),
-            ],
-        )
-        .environment("production");
+            TelemetryConfig::new("fallback"),
+            &[("OTEL_SERVICE_NAME", "from-env")],
+        );
 
         assert_eq!(config.service_name, "from-env");
-        assert_eq!(config.service_version.as_deref(), Some("9.9.9"));
-        assert_eq!(config.environment.as_deref(), Some("production"));
+        let config = config.service_name("from-code");
+        assert_eq!(config.service_name, "from-code");
     }
 
     #[cfg(any(feature = "otlp-grpc", feature = "otlp-http"))]
     #[test]
-    fn the_standard_endpoint_wins_over_host_and_port() {
+    fn the_standard_endpoint_is_trimmed() {
         let config = overlay(
             TelemetryConfig::new("svc"),
-            &[
-                ("OTEL_EXPORTER_OTLP_ENDPOINT", " http://collector:4317 "),
-                ("OTEL_HOST", "ignored"),
-            ],
+            &[("OTEL_EXPORTER_OTLP_ENDPOINT", " http://collector:4317 ")],
         );
         assert_eq!(endpoint(&config).as_deref(), Some("http://collector:4317"));
     }
 
-    #[cfg(feature = "otlp-grpc")]
     #[test]
-    fn host_and_port_build_an_endpoint() {
-        let config = overlay(TelemetryConfig::new("svc"), &[("OTEL_HOST", "collector")]);
-        assert_eq!(endpoint(&config).as_deref(), Some("http://collector:4317"));
-
+    fn nonstandard_otel_aliases_are_not_read() {
         let config = overlay(
-            TelemetryConfig::new("svc"),
-            &[("OTEL_HOST", "collector"), ("OTEL_PORT", "14317")],
-        );
-        assert_eq!(endpoint(&config).as_deref(), Some("http://collector:14317"));
-    }
-
-    #[cfg(feature = "otlp-http")]
-    #[test]
-    fn the_default_port_follows_the_protocol() {
-        let config = overlay(
-            TelemetryConfig::new("svc"),
+            TelemetryConfig::new("svc")
+                .service_version("code-version")
+                .environment("production")
+                .sample_ratio(0.25),
             &[
                 ("OTEL_HOST", "collector"),
-                ("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf"),
+                ("OTEL_PORT", "14317"),
+                ("OTEL_SERVICE_VERSION", "env-version"),
+                ("ENVIRONMENT", "staging"),
+                ("OTEL_TRACES_SAMPLE_RATIO", "0"),
             ],
         );
-        assert_eq!(
-            config.otlp_target_for(Signal::Traces),
-            Some(SignalTarget {
-                protocol: Protocol::HttpProtobuf,
-                endpoint: "http://collector:4318".to_string(),
-                exact: false,
-            })
-        );
-
-        // A protocol chosen after the overlay still gets its own default port.
-        let config = overlay(TelemetryConfig::new("svc"), &[("OTEL_HOST", "collector")])
-            .otlp_protocol(Protocol::HttpProtobuf);
-        assert_eq!(endpoint(&config).as_deref(), Some("http://collector:4318"));
+        assert_eq!(config.otlp_endpoint, None);
+        assert_eq!(config.service_version.as_deref(), Some("code-version"));
+        assert_eq!(config.environment.as_deref(), Some("production"));
+        assert_eq!(config.sample_ratio, Some(0.25));
     }
 
     #[cfg(any(feature = "otlp-grpc", feature = "otlp-http"))]
@@ -688,7 +669,7 @@ mod tests {
         let config = overlay(
             TelemetryConfig::new("svc"),
             &[
-                ("OTEL_HOST", "collector"),
+                ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4317"),
                 ("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "http/protobuf"),
             ],
         );
@@ -697,10 +678,10 @@ mod tests {
         assert_eq!(traces.protocol, Protocol::Grpc);
         assert_eq!(traces.endpoint, "http://collector:4317");
 
-        // The protocol override also drives the default port.
+        // A protocol override preserves the explicitly configured endpoint.
         let metrics = config.otlp_target_for(Signal::Metrics).expect("metrics");
         assert_eq!(metrics.protocol, Protocol::HttpProtobuf);
-        assert_eq!(metrics.endpoint, "http://collector:4318");
+        assert_eq!(metrics.endpoint, "http://collector:4317");
     }
 
     #[cfg(any(feature = "otlp-grpc", feature = "otlp-http"))]
@@ -785,7 +766,7 @@ mod tests {
         let config = overlay(
             TelemetryConfig::new("svc").otlp_logs_protocol(Protocol::HttpProtobuf),
             &[
-                ("OTEL_HOST", "collector"),
+                ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4317"),
                 ("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "http/protobuf"),
             ],
         )
@@ -799,7 +780,7 @@ mod tests {
         // The plain setter only changes the default.
         let config = overlay(
             TelemetryConfig::new("svc").otlp_logs_protocol(Protocol::HttpProtobuf),
-            &[("OTEL_HOST", "collector")],
+            &[("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4317")],
         )
         .otlp_protocol(Protocol::Grpc);
         let logs = config.otlp_target_for(Signal::Logs).expect("logs");
@@ -816,26 +797,22 @@ mod tests {
     }
 
     #[test]
-    fn a_blank_host_configures_no_endpoint() {
+    fn a_blank_endpoint_configures_no_endpoint() {
         let config = overlay(
             TelemetryConfig::new("svc"),
-            &[("OTEL_HOST", "  "), ("OTEL_EXPORTER_OTLP_ENDPOINT", "")],
+            &[("OTEL_EXPORTER_OTLP_ENDPOINT", "  ")],
         );
         assert_eq!(config.otlp_endpoint, None);
     }
 
     #[test]
-    fn the_sample_ratio_is_clamped_and_garbage_is_ignored() {
-        let config = overlay(
-            TelemetryConfig::new("svc"),
-            &[("OTEL_TRACES_SAMPLE_RATIO", "7")],
-        );
+    fn the_sample_ratio_is_clamped_and_nan_is_ignored() {
+        let config = TelemetryConfig::new("svc").sample_ratio(7.0);
         assert_eq!(config.sample_ratio, Some(1.0));
 
-        let config = overlay(
-            TelemetryConfig::new("svc").sample_ratio(0.25),
-            &[("OTEL_TRACES_SAMPLE_RATIO", "lots")],
-        );
+        let config = TelemetryConfig::new("svc")
+            .sample_ratio(0.25)
+            .sample_ratio(f64::NAN);
         assert_eq!(config.sample_ratio, Some(0.25));
 
         assert_eq!(
@@ -859,6 +836,13 @@ mod tests {
             &[("OTEL_SDK_DISABLED", "false")],
         );
         assert_eq!(config.exporter, Exporter::Otlp);
+
+        let config = overlay(TelemetryConfig::new("svc"), &[("OTEL_SDK_DISABLED", "1")]);
+        assert_eq!(
+            config.exporter,
+            Exporter::Otlp,
+            "only true disables the SDK"
+        );
     }
 
     #[test]
