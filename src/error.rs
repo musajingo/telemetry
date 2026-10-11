@@ -30,6 +30,16 @@ pub enum InitError {
     /// transport, which needs none.
     #[cfg(feature = "otlp-grpc")]
     NoTokioRuntime,
+    /// Strict mode: OTLP is selected but no endpoint is configured for any
+    /// signal, so nothing would be exported.
+    NoExportTarget,
+    /// Strict mode: an exporter could not be built.
+    ExporterSetup {
+        /// Which signal's exporter failed: `traces`, `metrics` or `logs`.
+        signal: &'static str,
+        /// The exporter builder's complaint.
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
 }
 
 impl fmt::Display for InitError {
@@ -48,6 +58,12 @@ impl fmt::Display for InitError {
             Self::NoTokioRuntime => f.write_str(
                 "OTLP over gRPC needs a running Tokio runtime; initialize inside the runtime or use the otlp-http transport",
             ),
+            Self::NoExportTarget => f.write_str(
+                "strict mode: OTLP export is selected but no endpoint is configured for any signal",
+            ),
+            Self::ExporterSetup { signal, .. } => {
+                write!(f, "strict mode: the {signal} exporter could not be built")
+            }
         }
     }
 }
@@ -61,6 +77,8 @@ impl std::error::Error for InitError {
             }
             #[cfg(feature = "otlp-grpc")]
             Self::NoTokioRuntime => None,
+            Self::NoExportTarget => None,
+            Self::ExporterSetup { source, .. } => Some(source.as_ref()),
         }
     }
 }

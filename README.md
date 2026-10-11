@@ -28,7 +28,8 @@ usual.
   the trace they belong to without going through OTLP.
 - **Boots with or without a collector.** With no endpoint configured the
   service just logs to stdout. An exporter that cannot be built disables that
-  one signal instead of taking the service down.
+  one signal instead of taking the service down. The guard reports what is
+  actually exporting, and a strict mode fails init instead of degrading.
 - **`OtelGuard`** shuts the exporters down on drop, flushes on demand for
   runtimes that freeze the process (AWS Lambda), and reports the error that
   ended `main`.
@@ -142,6 +143,13 @@ subscriber is already installed, a filter does not parse, or gRPC export is
 configured outside a Tokio runtime. A failed init leaves all global state
 untouched.
 
+By default a missing endpoint or an exporter that cannot be built is reported
+on stderr and the service boots without that signal. The guard says what
+actually came up — `exports_traces()`, `exports_metrics()`, `exports_logs()`
+and `exporter_failures()` — for a health endpoint, say. Where booting without
+telemetry is itself a failure, `strict(true)` (or `TELEMETRY_STRICT=true`)
+turns both cases into an init error instead.
+
 A library cannot see the name or version of the binary it is linked into, which
 is why both are passed in. `service.version` and `deployment.environment.name`
 are omitted when not configured.
@@ -162,6 +170,7 @@ Read by `with_env()` / `from_env()`:
 | `OTEL_TRACES_SAMPLE_RATIO`       | Fraction of new traces to sample, `0.0` to `1.0`                                                                                      |
 | `TELEMETRY_LOG_FORMAT`           | `text` (default), `pretty` or `json`                                                                                                  |
 | `TELEMETRY_TRUST_INCOMING_TRACE` | `true` continues inbound `traceparent` headers. See [HTTP servers](#http-servers)                                                     |
+| `TELEMETRY_STRICT`               | `true` fails init when OTLP export will not happen, instead of booting without it                                                     |
 
 Each signal can also go to its own backend, per the OTLP specification:
 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `..._METRICS_ENDPOINT` and

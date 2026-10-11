@@ -56,6 +56,7 @@ pub struct TelemetryConfig {
     pub(crate) log_format: LogFormat,
     pub(crate) trust_incoming_trace: bool,
     pub(crate) panic_hook: bool,
+    pub(crate) strict: bool,
 }
 
 impl TelemetryConfig {
@@ -84,6 +85,7 @@ impl TelemetryConfig {
             log_format: LogFormat::default(),
             trust_incoming_trace: false,
             panic_hook: true,
+            strict: false,
         }
     }
 
@@ -109,6 +111,7 @@ impl TelemetryConfig {
     /// | `OTEL_TRACES_SAMPLE_RATIO` | [`sample_ratio`](Self::sample_ratio) |
     /// | `TELEMETRY_LOG_FORMAT` | [`log_format`](Self::log_format): `text`, `pretty` or `json` |
     /// | `TELEMETRY_TRUST_INCOMING_TRACE` | [`trust_incoming_trace`](Self::trust_incoming_trace) |
+    /// | `TELEMETRY_STRICT` | [`strict`](Self::strict) |
     ///
     /// `RUST_LOG` and the OpenTelemetry SDK's own variables are not part of
     /// the overlay; they are read during init whenever the matching setting
@@ -186,6 +189,9 @@ impl TelemetryConfig {
         }
         if let Some(trust) = var("TELEMETRY_TRUST_INCOMING_TRACE").and_then(|v| parse_bool(&v)) {
             self.trust_incoming_trace = trust;
+        }
+        if let Some(strict) = var("TELEMETRY_STRICT").and_then(|v| parse_bool(&v)) {
+            self.strict = strict;
         }
 
         self
@@ -326,6 +332,16 @@ impl TelemetryConfig {
         self
     }
 
+    /// Whether init fails when OTLP export will not happen: no endpoint for
+    /// any signal, or an exporter that cannot be built. Defaults to `false`,
+    /// which reports the problem and boots without that signal.
+    /// `Exporter::Stdout` and [`Exporter::None`] are deliberate choices and
+    /// stay allowed.
+    pub fn strict(mut self, strict: bool) -> Self {
+        self.strict = strict;
+        self
+    }
+
     /// Installs the global subscriber and returns the guard that owns the
     /// telemetry providers.
     ///
@@ -350,8 +366,9 @@ impl TelemetryConfig {
     ///
     /// Fails, leaving every global untouched, when a global `tracing`
     /// subscriber is already installed, the configured log or trace filter
-    /// does not parse, or [`Protocol::Grpc`] export is configured outside a
-    /// Tokio runtime, which the gRPC client needs.
+    /// does not parse, [`Protocol::Grpc`] export is configured outside a
+    /// Tokio runtime (which the gRPC client needs), or [`strict`](Self::strict)
+    /// mode found that OTLP export will not happen.
     pub fn try_init(self) -> Result<OtelGuard, InitError> {
         crate::init::try_init(self)
     }
@@ -692,6 +709,18 @@ mod tests {
             &[("OTEL_SDK_DISABLED", "false")],
         );
         assert_eq!(config.exporter, Exporter::Otlp);
+    }
+
+    #[test]
+    fn strict_is_read_from_the_environment() {
+        let config = overlay(TelemetryConfig::new("svc"), &[("TELEMETRY_STRICT", "true")]);
+        assert!(config.strict);
+
+        let config = overlay(
+            TelemetryConfig::new("svc").strict(true),
+            &[("TELEMETRY_STRICT", "false")],
+        );
+        assert!(!config.strict);
     }
 
     #[test]

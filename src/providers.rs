@@ -26,6 +26,8 @@ pub(crate) struct Providers {
     pub(crate) tracer: Option<SdkTracerProvider>,
     pub(crate) meter: Option<SdkMeterProvider>,
     pub(crate) logger: Option<SdkLoggerProvider>,
+    /// Exporters that could not be built, by signal name.
+    pub(crate) failures: Vec<(&'static str, Box<dyn std::error::Error + Send + Sync>)>,
 }
 
 impl Providers {
@@ -42,15 +44,17 @@ impl Providers {
     #[cfg(any(feature = "otlp-grpc", feature = "otlp-http"))]
     fn otlp(config: &TelemetryConfig) -> Self {
         let resource = config.resource();
+        let mut failures: Vec<(&'static str, Box<dyn std::error::Error + Send + Sync>)> =
+            Vec::new();
 
         let tracer = config
             .otlp_target_for(Signal::Traces)
-            .and_then(|target| {
-                span_exporter(&target)
-                    .inspect_err(|err| {
-                        eprintln!("telemetry: OTLP span exporter disabled ({err:?})");
-                    })
-                    .ok()
+            .and_then(|target| match span_exporter(&target) {
+                Ok(exporter) => Some(exporter),
+                Err(err) => {
+                    failures.push(("traces", Box::new(err)));
+                    None
+                }
             })
             .map(|exporter| {
                 tracer_provider_builder(config, resource.clone())
@@ -59,24 +63,24 @@ impl Providers {
             });
         let meter = config
             .otlp_target_for(Signal::Metrics)
-            .and_then(|target| {
-                metric_exporter(&target)
-                    .inspect_err(|err| {
-                        eprintln!("telemetry: OTLP metric exporter disabled ({err:?})");
-                    })
-                    .ok()
+            .and_then(|target| match metric_exporter(&target) {
+                Ok(exporter) => Some(exporter),
+                Err(err) => {
+                    failures.push(("metrics", Box::new(err)));
+                    None
+                }
             })
             .map(|exporter| meter_provider(config, exporter, resource.clone()));
         // Log records flow from `tracing` events through the
         // `OpenTelemetryTracingBridge` into this provider.
         let logger = config
             .otlp_target_for(Signal::Logs)
-            .and_then(|target| {
-                log_exporter(&target)
-                    .inspect_err(|err| {
-                        eprintln!("telemetry: OTLP log exporter disabled ({err:?})");
-                    })
-                    .ok()
+            .and_then(|target| match log_exporter(&target) {
+                Ok(exporter) => Some(exporter),
+                Err(err) => {
+                    failures.push(("logs", Box::new(err)));
+                    None
+                }
             })
             .map(|exporter| {
                 SdkLoggerProvider::builder()
@@ -89,17 +93,29 @@ impl Providers {
             tracer,
             meter,
             logger,
+            failures,
         }
     }
 
+    /// No transport is compiled in, so a configured endpoint is a recorded
+    /// per-signal failure instead of a working exporter.
     #[cfg(not(any(feature = "otlp-grpc", feature = "otlp-http")))]
     fn otlp(config: &TelemetryConfig) -> Self {
-        if config.otlp_endpoint.is_some() {
-            eprintln!(
-                "telemetry: an OTLP endpoint is configured but neither the `otlp-grpc` nor the `otlp-http` feature is enabled, nothing will be exported"
-            );
+        let mut providers = Self::default();
+        for (signal, overrides) in [
+            ("traces", &config.otlp_traces),
+            ("metrics", &config.otlp_metrics),
+            ("logs", &config.otlp_logs),
+        ] {
+            if config.otlp_endpoint.is_some() || overrides.endpoint.is_some() {
+                providers.failures.push((
+                    signal,
+                    "an OTLP endpoint is configured but neither the `otlp-grpc` nor the `otlp-http` feature is enabled"
+                        .into(),
+                ));
+            }
         }
-        Self::default()
+        providers
     }
 
     /// Spans are written as they end and metrics on the usual interval. Log
@@ -119,6 +135,7 @@ impl Providers {
             tracer: Some(tracer),
             meter: Some(meter),
             logger: None,
+            failures: Vec::new(),
         }
     }
 }
@@ -263,5 +280,26 @@ mod tests {
             http_url(&base, "v1/traces"),
             "http://collector:4318/v1/traces"
         );
+    }
+}
+
+#[cfg(all(test, not(any(feature = "otlp-grpc", feature = "otlp-http"))))]
+mod no_transport_tests {
+    use super::*;
+
+    #[test]
+    fn an_endpoint_without_a_transport_is_a_recorded_failure() {
+        let config = TelemetryConfig::new("svc").otlp_endpoint("http://collector:4317");
+        let providers = Providers::build(&config);
+        assert_eq!(providers.failures.len(), 3, "one failure per signal");
+        assert!(
+            providers.failures[0].1.to_string().contains("feature"),
+            "{}",
+            providers.failures[0].1
+        );
+
+        // No endpoint anywhere: nothing was misconfigured, no failure.
+        let providers = Providers::build(&TelemetryConfig::new("svc"));
+        assert!(providers.failures.is_empty());
     }
 }

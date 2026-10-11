@@ -52,7 +52,27 @@ pub(crate) fn try_init(config: TelemetryConfig) -> Result<OtelGuard, InitError> 
         return Err(InitError::NoTokioRuntime);
     }
 
-    let providers = Providers::build(&config);
+    let mut providers = Providers::build(&config);
+
+    // Strict mode fails init where the default reports and degrades.
+    if config.strict && config.exporter == crate::config::Exporter::Otlp {
+        if !providers.failures.is_empty() {
+            let (signal, source) = providers.failures.remove(0);
+            return Err(InitError::ExporterSetup { signal, source });
+        }
+        if providers.tracer.is_none() && providers.meter.is_none() && providers.logger.is_none() {
+            return Err(InitError::NoExportTarget);
+        }
+    }
+    let exporter_failures: Vec<String> = providers
+        .failures
+        .drain(..)
+        .map(|(signal, err)| {
+            let message = format!("OTLP {signal} exporter disabled ({err})");
+            eprintln!("telemetry: {message}");
+            message
+        })
+        .collect();
 
     subscriber(&config, &providers, filters)
         .try_init()
@@ -82,6 +102,7 @@ pub(crate) fn try_init(config: TelemetryConfig) -> Result<OtelGuard, InitError> 
         tracer_provider: providers.tracer,
         meter_provider: providers.meter,
         logger_provider: providers.logger,
+        exporter_failures,
     })
 }
 
@@ -393,6 +414,7 @@ mod tests {
                     .with_simple_exporter(logs.clone())
                     .build(),
             ),
+            failures: Vec::new(),
         }
     }
 
@@ -493,6 +515,7 @@ mod tests {
                 tracer: None,
                 meter: Some(provider.clone()),
                 logger: None,
+                failures: Vec::new(),
             };
             let config = TelemetryConfig::new("svc")
                 .log_filter("info")

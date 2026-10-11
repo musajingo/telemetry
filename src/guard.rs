@@ -14,9 +14,33 @@ pub struct OtelGuard {
     pub(crate) tracer_provider: Option<SdkTracerProvider>,
     pub(crate) meter_provider: Option<SdkMeterProvider>,
     pub(crate) logger_provider: Option<SdkLoggerProvider>,
+    pub(crate) exporter_failures: Vec<String>,
 }
 
 impl OtelGuard {
+    /// Whether spans are being exported. When false there are also no trace
+    /// ids on log lines and no outbound trace headers.
+    pub fn exports_traces(&self) -> bool {
+        self.tracer_provider.is_some()
+    }
+
+    /// Whether metrics are being exported.
+    pub fn exports_metrics(&self) -> bool {
+        self.meter_provider.is_some()
+    }
+
+    /// Whether log records are being exported. Stdout logging is independent
+    /// of this and always on.
+    pub fn exports_logs(&self) -> bool {
+        self.logger_provider.is_some()
+    }
+
+    /// The exporters that could not be built, one message per failed signal.
+    /// Empty when everything configured came up.
+    pub fn exporter_failures(&self) -> &[String] {
+        &self.exporter_failures
+    }
+
     /// Flushes every provider's pending telemetry synchronously.
     ///
     /// Needed wherever the process can be frozen or killed without warning.
