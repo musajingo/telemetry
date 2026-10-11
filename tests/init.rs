@@ -60,7 +60,7 @@ async fn telemetry_initializes_once_per_process() {
     assert!(matches!(err, InitError::AlreadyInitialized), "{err}");
 
     // Flushing to a dead collector reports the failure instead of panicking.
-    guard.force_flush();
+    let _ = guard.force_flush();
     guard.report_exit(&Err::<(), _>("boom"));
     drop(guard);
 }

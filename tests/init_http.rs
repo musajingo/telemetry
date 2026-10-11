@@ -36,6 +36,6 @@ fn http_export_needs_no_async_runtime() {
     }
 
     // Flushing to a dead collector reports the failure instead of panicking.
-    guard.force_flush();
+    let _ = guard.force_flush();
     drop(guard);
 }

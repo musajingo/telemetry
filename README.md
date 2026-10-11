@@ -30,7 +30,8 @@ usual.
   service just logs to stdout. An exporter that cannot be built disables that
   one signal instead of taking the service down. The guard reports what is
   actually exporting, and a strict mode fails init instead of degrading.
-- **`OtelGuard`** shuts the exporters down on drop, flushes on demand for
+- **`OtelGuard`** shuts the exporters down on drop (or fallibly, via
+  `shutdown()`), flushes on demand for
   runtimes that freeze the process (AWS Lambda), and reports the error that
   ended `main`.
 - **Panics become `tracing` errors**, including panics in spawned tasks, which
@@ -313,7 +314,9 @@ every invocation:
 let guard = telemetry::init_telemetry("my-function");
 
 // ...in the handler, once the response is ready:
-guard.force_flush();
+if let Err(err) = guard.force_flush() {
+    eprintln!("telemetry flush failed: {err}");
+}
 # }
 ```
 
@@ -341,15 +344,16 @@ telemetry = { git = "https://github.com/musamahmoudjingo/telemetry", tag = "v0.1
 ```rust,ignore
 #[tokio::test]
 async fn my_test() {
-    let _guard = telemetry::init_testing_telemetry("my-service");
+    telemetry::init_testing_telemetry("my-service");
     // Spans and metrics produced from here on are printed to stdout.
 }
 ```
 
-The `tracing` subscriber is global, so this works once per test binary. Where
-several tests may race to initialize it, use
-`TelemetryConfig::new(..).exporter(Exporter::Stdout).try_init()` and ignore
-`InitError::AlreadyInitialized`.
+The `tracing` subscriber is global, so the setup happens once per test binary
+and the guard is shared: every call returns the same `&'static OtelGuard`
+(the first caller's service name wins), and telemetry stays up until the
+process ends. Tests can call it in any order, and none of them can shut
+telemetry down for the others.
 
 ## Feature flags
 

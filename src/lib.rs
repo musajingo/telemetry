@@ -11,6 +11,7 @@ mod guard;
 #[cfg(feature = "tower-http")]
 mod http;
 mod init;
+mod lifecycle_error;
 mod panic_hook;
 mod propagate;
 mod providers;
@@ -26,6 +27,7 @@ pub use {opentelemetry, opentelemetry_sdk, tracing_opentelemetry};
 pub use config::{Exporter, LogFormat, Protocol, TelemetryConfig};
 pub use error::InitError;
 pub use guard::OtelGuard;
+pub use lifecycle_error::LifecycleError;
 #[cfg(feature = "tower-http")]
 pub use http::{OtelMakeSpan, OtelOnResponse, http_trace_layer};
 pub use init::{init_telemetry, try_init_telemetry};
