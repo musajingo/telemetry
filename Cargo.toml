@@ -1,6 +1,6 @@
 [package]
 name = "telemetry"
-description = "One-call OpenTelemetry setup for tracing-based services: OTLP traces, metrics and logs, a flush-on-drop guard, panic capture and HTTP trace propagation."
+description = "One-call OpenTelemetry setup."
 authors = ["Musa Mahmoud Jingo <dev.musajingo@pm.me>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/musajingo/telemetry"
@@ -14,27 +14,18 @@ readme = "README.md"
 unsafe_code = "forbid"
 
 [lints.clippy]
-# Folder modules use mod.rs, not the self-named-file style.
 self_named_module_files = "deny"
 
 [features]
 default       = ["otlp-grpc", "tower-http", "json"]
-# OTLP over gRPC (tonic). Needs a Tokio runtime; `tokio` is only here to
-# detect its absence and fail init with an error instead of tonic's panic.
+# Requires a Tokio runtime.
 otlp-grpc     = ["dep:opentelemetry-otlp", "opentelemetry-otlp/grpc-tonic", "dep:tokio"]
-# OTLP over HTTP with protobuf payloads (blocking reqwest client on the
-# exporters' own threads, so no async runtime is needed).
+# Runs on exporter threads; no async runtime needed.
 otlp-http     = ["dep:opentelemetry-otlp", "opentelemetry-otlp/http-proto", "opentelemetry-otlp/reqwest-blocking-client"]
-# TLS for `https://` endpoints, per transport, with the platform's root store.
 otlp-grpc-tls = ["otlp-grpc", "opentelemetry-otlp/tls", "opentelemetry-otlp/tls-roots"]
 otlp-http-tls = ["otlp-http", "opentelemetry-otlp/reqwest-rustls"]
-# `OtelMakeSpan` and `OtelOnResponse` for tower-http's `TraceLayer`.
 tower-http    = ["dep:tower-http", "dep:http", "dep:opentelemetry-http"]
-# `LogFormat::Json` for the stdout log layer, with `trace_id`/`span_id` on
-# every line emitted inside a trace.
 json          = ["dep:json-subscriber"]
-# `Exporter::Stdout` and `init_testing_telemetry`: print telemetry instead of
-# sending it to a collector.
 stdout        = ["dep:opentelemetry-stdout"]
 
 [dependencies]
@@ -44,27 +35,20 @@ tracing-opentelemetry              = { version = "0.33", features = ["metrics"] 
 opentelemetry                      = "0.32"
 opentelemetry_sdk                  = { version = "0.32", features = ["trace", "metrics", "logs"] }
 opentelemetry-appender-tracing     = "0.32"
-# The transport (and with it tonic or reqwest) comes from the `otlp-*` features.
 opentelemetry-otlp                 = { version = "0.32", default-features = false, features = ["trace", "metrics", "logs", "internal-logs"], optional = true }
 opentelemetry-semantic-conventions = { version = "0.32", features = ["semconv_experimental"] }
 opentelemetry-stdout               = { version = "0.32", features = ["trace", "metrics"], optional = true }
 opentelemetry-http                 = { version = "0.32", optional = true }
-# `MakeSpan` and `OnResponse` are tower-http traits, so this must be the same
-# tower-http version the application uses (axum 0.8 is on 0.6).
+# Must match the application's tower-http version so the traits are compatible.
 tower-http                         = { version = "0.6", features = ["trace"], optional = true }
 http                               = { version = "1", optional = true }
-# Only for `Handle::try_current`; tonic pulls the runtime in anyway.
+# Checks for a runtime so init returns an error instead of tonic panicking.
 tokio                              = { version = "1.42", default-features = false, features = ["rt"], optional = true }
-# The JSON log layer. The feature pins it to the same tracing-opentelemetry
-# version as above, which is what lets it read the otel span extensions.
+# Match tracing-opentelemetry's version to read trace IDs from spans.
 json-subscriber                    = { version = "0.3.1", features = ["tracing-opentelemetry-0-33"], optional = true }
 
 [dev-dependencies]
-# In-memory exporters for asserting on what the layers produce.
 opentelemetry_sdk = { version = "0.32", features = ["testing"] }
-# The OTLP/gRPC exporters are built inside a Tokio runtime.
 tokio = { version = "1.42", features = ["macros", "rt-multi-thread"] }
-# For asserting on the JSON log lines.
 serde_json = "1"
-# For driving a request through the HTTP trace layer.
 tower = { version = "0.5", features = ["util"] }
