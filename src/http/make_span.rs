@@ -36,21 +36,16 @@ impl OtelMakeSpan {
 
 static TRUST_INCOMING_TRACE: OnceLock<bool> = OnceLock::new();
 
-/// Records the configured trust setting. The first call wins, so this is a
-/// no-op once a request has already been served.
+/// Records the configured trust setting. The first init wins.
 pub(crate) fn set_trust_incoming_trace(trust: bool) {
     let _ = TRUST_INCOMING_TRACE.set(trust);
 }
 
-/// Whether to honour an inbound `traceparent`. Falls back to
-/// `TELEMETRY_TRUST_INCOMING_TRACE` when telemetry was never initialized, and
-/// to `false` when that is unset.
+/// Whether to honour an inbound `traceparent`. False before telemetry is
+/// initialized, without pinning the lock: a request served that early must
+/// not stop init from applying the configured setting.
 fn trust_incoming_trace() -> bool {
-    *TRUST_INCOMING_TRACE.get_or_init(|| {
-        std::env::var("TELEMETRY_TRUST_INCOMING_TRACE")
-            .map(|v| v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    })
+    TRUST_INCOMING_TRACE.get().copied().unwrap_or(false)
 }
 
 impl<B> MakeSpan<B> for OtelMakeSpan {
@@ -87,6 +82,47 @@ mod tests {
     use tracing_subscriber::layer::SubscriberExt as _;
 
     use super::*;
+
+    #[test]
+    fn requests_before_init_do_not_pin_the_trust_setting() {
+        global::set_text_map_propagator(TraceContextPropagator::new());
+        let provider = SdkTracerProvider::builder().build();
+        let subscriber = tracing_subscriber::registry()
+            .with(OpenTelemetryLayer::new(provider.tracer("svc")));
+        let _default = tracing::subscriber::set_default(subscriber);
+
+        let request = || {
+            http::Request::builder()
+                .uri("/orders")
+                .header(
+                    "traceparent",
+                    "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+                )
+                .body(())
+                .expect("a request")
+        };
+        let trace_id_of = |span: &tracing::Span| {
+            span.context().span().span_context().trace_id().to_string()
+        };
+
+        // Before init nothing is trusted: a fresh root trace...
+        let span = OtelMakeSpan::default().make_span(&request());
+        assert_ne!(
+            trace_id_of(&span),
+            "4bf92f3577b34da6a3ce929d0e0e4736",
+            "untrusted before init"
+        );
+
+        // ...and that early request must not pin the setting: trust
+        // configured at init still applies.
+        set_trust_incoming_trace(true);
+        let span = OtelMakeSpan::default().make_span(&request());
+        assert_eq!(
+            trace_id_of(&span),
+            "4bf92f3577b34da6a3ce929d0e0e4736",
+            "the configured trust applies after init"
+        );
+    }
 
     #[test]
     fn a_per_layer_trust_override_continues_the_inbound_trace() {
