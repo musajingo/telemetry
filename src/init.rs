@@ -4,7 +4,6 @@
 use opentelemetry::global;
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
-use opentelemetry_sdk::propagation::TraceContextPropagator;
 use tracing::level_filters::LevelFilter;
 use tracing_opentelemetry::{MetricsLayer, OpenTelemetryLayer};
 use tracing_subscriber::{
@@ -52,7 +51,9 @@ pub(crate) fn try_init(config: TelemetryConfig) -> Result<OtelGuard, InitError> 
 
     // The OpenTelemetry globals are only claimed once the subscriber is in
     // place, so a failed init leaves them alone.
-    global::set_text_map_propagator(TraceContextPropagator::new());
+    global::set_text_map_propagator(crate::propagate::propagator_from_spec(
+        std::env::var("OTEL_PROPAGATORS").ok().as_deref(),
+    ));
     if let Some(provider) = &providers.tracer {
         global::set_tracer_provider(provider.clone());
     }

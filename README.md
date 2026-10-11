@@ -162,6 +162,7 @@ Read during init, whenever the matching setting was left unset:
 | Variable                                         | Meaning                                                     |
 | ------------------------------------------------ | ----------------------------------------------------------- |
 | `RUST_LOG`                                       | Log filter. Defaults to `info`                              |
+| `OTEL_PROPAGATORS`                               | `tracecontext`, `baggage` or `none`. Defaults to both       |
 | `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | Standard sampler selection. Defaults to sampling everything |
 | `OTEL_METRIC_EXPORT_INTERVAL`                    | Milliseconds between metric exports. Defaults to `60000`    |
 | `OTEL_RESOURCE_ATTRIBUTES`                       | Extra resource attributes, `key=value,key=value`            |
@@ -236,7 +237,8 @@ traits only line up when your application is on the same tower-http version.
 ## Outbound propagation
 
 HTTP clients usually have a middleware for this. For everything else,
-`current_trace_headers()` returns the W3C pairs for the current span:
+`current_trace_headers()` returns the W3C pairs for the current span —
+`traceparent`/`tracestate` and, when the context carries any, `baggage`:
 
 ```rust
 let mut metadata: Vec<(String, String)> = Vec::new();
