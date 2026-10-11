@@ -13,6 +13,10 @@ readme = "README.md"
 [lints.rust]
 unsafe_code = "forbid"
 
+[lints.clippy]
+# Folder modules use mod.rs, not the self-named-file style.
+self_named_module_files = "deny"
+
 [features]
 default       = ["otlp-grpc", "tower-http", "json"]
 # OTLP over gRPC (tonic). Needs a Tokio runtime.

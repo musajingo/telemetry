@@ -1,5 +1,5 @@
-//! Telemetry configuration: defaults, builder-style setters and the
-//! environment overlay.
+//! The config builder: defaults, builder-style setters and the environment
+//! overlay.
 
 use std::time::Duration;
 
@@ -10,150 +10,13 @@ use opentelemetry_semantic_conventions::{
     attribute::{DEPLOYMENT_ENVIRONMENT_NAME, SERVICE_NAME, SERVICE_VERSION},
 };
 
+use super::endpoint::Endpoint;
+use super::exporter::Exporter;
+use super::log_format::LogFormat;
+use super::protocol::Protocol;
+use super::signal::{Signal, SignalOverride, SignalTarget};
 use crate::error::InitError;
 use crate::guard::OtelGuard;
-
-/// Where traces, metrics and log records are sent.
-///
-/// Stdout logging is independent of this choice and always stays on.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Exporter {
-    /// OTLP to the configured endpoint, over the configured [`Protocol`].
-    /// When no endpoint is configured nothing is exported, so a service boots
-    /// the same way with or without a collector.
-    #[default]
-    Otlp,
-    /// Print spans and metrics to stdout. Meant for tests and local runs
-    /// where no collector is available.
-    #[cfg(feature = "stdout")]
-    Stdout,
-    /// Export nothing.
-    None,
-}
-
-/// The OTLP transport. Each variant exists only when its feature is enabled.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Protocol {
-    /// gRPC, conventionally on port `4317`. Needs a Tokio runtime.
-    #[cfg(feature = "otlp-grpc")]
-    Grpc,
-    /// HTTP with protobuf payloads, conventionally on port `4318`. Runs on
-    /// the exporters' own threads, so it needs no async runtime.
-    #[cfg(feature = "otlp-http")]
-    HttpProtobuf,
-}
-
-impl Protocol {
-    /// Parses the values of the standard `OTEL_EXPORTER_OTLP_PROTOCOL`
-    /// variable: `grpc` or `http/protobuf`.
-    ///
-    /// Returns `None` for anything else (`http/json` is not supported), and
-    /// for a protocol whose feature is disabled.
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            #[cfg(feature = "otlp-grpc")]
-            "grpc" => Some(Self::Grpc),
-            #[cfg(feature = "otlp-http")]
-            "http/protobuf" => Some(Self::HttpProtobuf),
-            _ => None,
-        }
-    }
-
-    /// gRPC when it is compiled in, otherwise HTTP, otherwise nothing.
-    pub(crate) fn preferred() -> Option<Self> {
-        #[cfg(feature = "otlp-grpc")]
-        {
-            Some(Self::Grpc)
-        }
-        #[cfg(all(not(feature = "otlp-grpc"), feature = "otlp-http"))]
-        {
-            Some(Self::HttpProtobuf)
-        }
-        #[cfg(not(any(feature = "otlp-grpc", feature = "otlp-http")))]
-        {
-            None
-        }
-    }
-
-    fn default_port(self) -> &'static str {
-        match self {
-            #[cfg(feature = "otlp-grpc")]
-            Self::Grpc => "4317",
-            #[cfg(feature = "otlp-http")]
-            Self::HttpProtobuf => "4318",
-        }
-    }
-}
-
-/// A collector address as configured, before the protocol's defaults apply.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Endpoint {
-    Url(String),
-    HostPort { host: String, port: Option<String> },
-}
-
-/// One of the three OTLP signals, where they need telling apart.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Signal {
-    Traces,
-    Metrics,
-    Logs,
-}
-
-/// Where one signal's exporter sends to.
-#[cfg_attr(
-    not(any(feature = "otlp-grpc", feature = "otlp-http")),
-    allow(dead_code)
-)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SignalTarget {
-    pub(crate) protocol: Protocol,
-    pub(crate) endpoint: String,
-    /// Whether the endpoint was configured for this signal specifically. The
-    /// OTLP spec uses such an endpoint exactly as given, where the base
-    /// endpoint gets `/v1/<signal>` appended over HTTP.
-    pub(crate) exact: bool,
-}
-
-/// Per-signal overrides of the base endpoint and protocol, as the
-/// `OTEL_EXPORTER_OTLP_<SIGNAL>_*` variables allow.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct SignalOverride {
-    pub(crate) endpoint: Option<String>,
-    pub(crate) protocol: Option<Protocol>,
-}
-
-/// Format of the stdout log lines.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum LogFormat {
-    /// Single-line human-readable output.
-    #[default]
-    Text,
-    /// Multi-line human-readable output, for local development.
-    Pretty,
-    /// One JSON object per line, for log shippers.
-    #[cfg(feature = "json")]
-    Json,
-}
-
-impl LogFormat {
-    /// Parses `text`, `pretty` or `json`, ignoring case.
-    ///
-    /// Returns `None` for anything else, and for `json` when the `json`
-    /// feature is disabled.
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "text" | "plain" | "full" => Some(Self::Text),
-            "pretty" => Some(Self::Pretty),
-            #[cfg(feature = "json")]
-            "json" => Some(Self::Json),
-            _ => None,
-        }
-    }
-}
 
 /// Everything [`try_init`](Self::try_init) needs to set telemetry up.
 ///
@@ -835,12 +698,6 @@ mod tests {
             &[("TELEMETRY_LOG_FORMAT", "yaml")],
         );
         assert_eq!(config.log_format, LogFormat::Pretty);
-    }
-
-    #[cfg(feature = "json")]
-    #[test]
-    fn json_is_a_known_log_format() {
-        assert_eq!(LogFormat::parse("JSON"), Some(LogFormat::Json));
     }
 
     #[test]
