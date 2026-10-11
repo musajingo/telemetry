@@ -157,6 +157,13 @@ Read by `with_env()` / `from_env()`:
 | `TELEMETRY_LOG_FORMAT`           | `text` (default), `pretty` or `json`                                                                                                  |
 | `TELEMETRY_TRUST_INCOMING_TRACE` | `true` continues inbound `traceparent` headers. See [HTTP servers](#http-servers)                                                     |
 
+Each signal can also go to its own backend, per the OTLP specification:
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `..._METRICS_ENDPOINT` and
+`..._LOGS_ENDPOINT` override the base endpoint for that one signal and are
+used exactly as given — no `/v1/<signal>` path is appended — and the matching
+`..._PROTOCOL` variables override the transport. A per-signal endpoint with no
+base endpoint turns on just that signal.
+
 Read during init, whenever the matching setting was left unset:
 
 | Variable                                         | Meaning                                                     |

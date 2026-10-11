@@ -16,7 +16,7 @@ use opentelemetry_sdk::{
 };
 
 #[cfg(any(feature = "otlp-grpc", feature = "otlp-http"))]
-use crate::config::Protocol;
+use crate::config::{Protocol, Signal, SignalTarget};
 use crate::config::{Exporter, TelemetryConfig};
 
 /// The providers behind one telemetry setup. A `None` means that signal is not
@@ -41,28 +41,43 @@ impl Providers {
 
     #[cfg(any(feature = "otlp-grpc", feature = "otlp-http"))]
     fn otlp(config: &TelemetryConfig) -> Self {
-        let Some((protocol, endpoint)) = config.otlp_target() else {
-            return Self::default();
-        };
         let resource = config.resource();
 
-        let tracer = span_exporter(protocol, &endpoint)
-            .inspect_err(|err| eprintln!("telemetry: OTLP span exporter disabled ({err:?})"))
-            .ok()
+        let tracer = config
+            .otlp_target_for(Signal::Traces)
+            .and_then(|target| {
+                span_exporter(&target)
+                    .inspect_err(|err| {
+                        eprintln!("telemetry: OTLP span exporter disabled ({err:?})");
+                    })
+                    .ok()
+            })
             .map(|exporter| {
                 tracer_provider_builder(config, resource.clone())
                     .with_batch_exporter(exporter)
                     .build()
             });
-        let meter = metric_exporter(protocol, &endpoint)
-            .inspect_err(|err| eprintln!("telemetry: OTLP metric exporter disabled ({err:?})"))
-            .ok()
+        let meter = config
+            .otlp_target_for(Signal::Metrics)
+            .and_then(|target| {
+                metric_exporter(&target)
+                    .inspect_err(|err| {
+                        eprintln!("telemetry: OTLP metric exporter disabled ({err:?})");
+                    })
+                    .ok()
+            })
             .map(|exporter| meter_provider(config, exporter, resource.clone()));
         // Log records flow from `tracing` events through the
         // `OpenTelemetryTracingBridge` into this provider.
-        let logger = log_exporter(protocol, &endpoint)
-            .inspect_err(|err| eprintln!("telemetry: OTLP log exporter disabled ({err:?})"))
-            .ok()
+        let logger = config
+            .otlp_target_for(Signal::Logs)
+            .and_then(|target| {
+                log_exporter(&target)
+                    .inspect_err(|err| {
+                        eprintln!("telemetry: OTLP log exporter disabled ({err:?})");
+                    })
+                    .ok()
+            })
             .map(|exporter| {
                 SdkLoggerProvider::builder()
                     .with_resource(resource)
@@ -146,56 +161,65 @@ fn signal_url(endpoint: &str, path: &str) -> String {
     format!("{}/{path}", endpoint.trim_end_matches('/'))
 }
 
+/// The HTTP URL for one signal: a per-signal endpoint is used exactly as
+/// given, the base endpoint gets the signal's path appended, as the OTLP
+/// specification says.
+#[cfg(feature = "otlp-http")]
+fn http_url(target: &SignalTarget, path: &str) -> String {
+    if target.exact {
+        target.endpoint.clone()
+    } else {
+        signal_url(&target.endpoint, path)
+    }
+}
+
 #[cfg(any(feature = "otlp-grpc", feature = "otlp-http"))]
 fn span_exporter(
-    protocol: Protocol,
-    endpoint: &str,
+    target: &SignalTarget,
 ) -> Result<opentelemetry_otlp::SpanExporter, ExporterBuildError> {
     let builder = opentelemetry_otlp::SpanExporter::builder();
-    match protocol {
+    match target.protocol {
         #[cfg(feature = "otlp-grpc")]
-        Protocol::Grpc => builder.with_tonic().with_endpoint(endpoint).build(),
+        Protocol::Grpc => builder.with_tonic().with_endpoint(&target.endpoint).build(),
         #[cfg(feature = "otlp-http")]
         Protocol::HttpProtobuf => builder
             .with_http()
             .with_protocol(opentelemetry_otlp::Protocol::HttpBinary)
-            .with_endpoint(signal_url(endpoint, "v1/traces"))
+            .with_endpoint(http_url(target, "v1/traces"))
             .build(),
     }
 }
 
 #[cfg(any(feature = "otlp-grpc", feature = "otlp-http"))]
 fn metric_exporter(
-    protocol: Protocol,
-    endpoint: &str,
+    target: &SignalTarget,
 ) -> Result<opentelemetry_otlp::MetricExporter, ExporterBuildError> {
     let builder = opentelemetry_otlp::MetricExporter::builder();
-    match protocol {
+    match target.protocol {
         #[cfg(feature = "otlp-grpc")]
-        Protocol::Grpc => builder.with_tonic().with_endpoint(endpoint).build(),
+        Protocol::Grpc => builder.with_tonic().with_endpoint(&target.endpoint).build(),
         #[cfg(feature = "otlp-http")]
         Protocol::HttpProtobuf => builder
             .with_http()
             .with_protocol(opentelemetry_otlp::Protocol::HttpBinary)
-            .with_endpoint(signal_url(endpoint, "v1/metrics"))
+            .with_endpoint(http_url(target, "v1/metrics"))
             .build(),
     }
 }
 
 #[cfg(any(feature = "otlp-grpc", feature = "otlp-http"))]
 fn log_exporter(
-    protocol: Protocol,
-    endpoint: &str,
+    target: &SignalTarget,
 ) -> Result<opentelemetry_otlp::LogExporter, ExporterBuildError> {
     let builder = opentelemetry_otlp::LogExporter::builder();
-    match protocol {
+    match target.protocol {
         #[cfg(feature = "otlp-grpc")]
-        Protocol::Grpc => builder.with_tonic().with_endpoint(endpoint).build(),
+        Protocol::Grpc => builder.with_tonic().with_endpoint(&target.endpoint).build(),
         #[cfg(feature = "otlp-http")]
         Protocol::HttpProtobuf => builder
             .with_http()
             .with_protocol(opentelemetry_otlp::Protocol::HttpBinary)
-            .with_endpoint(signal_url(endpoint, "v1/logs"))
+            .with_endpoint(http_url(target, "v1/logs"))
             .build(),
     }
 }
@@ -214,5 +238,27 @@ mod tests {
             signal_url("https://gateway.example.com/otlp/", "v1/logs"),
             "https://gateway.example.com/otlp/v1/logs"
         );
+    }
+
+    #[test]
+    fn a_per_signal_endpoint_is_used_verbatim() {
+        use crate::config::SignalTarget;
+
+        let exact = SignalTarget {
+            protocol: Protocol::HttpProtobuf,
+            endpoint: "http://traces.internal:4318/custom/traces".to_string(),
+            exact: true,
+        };
+        assert_eq!(
+            http_url(&exact, "v1/traces"),
+            "http://traces.internal:4318/custom/traces"
+        );
+
+        let base = SignalTarget {
+            protocol: Protocol::HttpProtobuf,
+            endpoint: "http://collector:4318".to_string(),
+            exact: false,
+        };
+        assert_eq!(http_url(&base, "v1/traces"), "http://collector:4318/v1/traces");
     }
 }

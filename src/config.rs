@@ -94,6 +94,37 @@ pub(crate) enum Endpoint {
     HostPort { host: String, port: Option<String> },
 }
 
+/// One of the three OTLP signals, where they need telling apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Signal {
+    Traces,
+    Metrics,
+    Logs,
+}
+
+/// Where one signal's exporter sends to.
+#[cfg_attr(
+    not(any(feature = "otlp-grpc", feature = "otlp-http")),
+    allow(dead_code)
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SignalTarget {
+    pub(crate) protocol: Protocol,
+    pub(crate) endpoint: String,
+    /// Whether the endpoint was configured for this signal specifically. The
+    /// OTLP spec uses such an endpoint exactly as given, where the base
+    /// endpoint gets `/v1/<signal>` appended over HTTP.
+    pub(crate) exact: bool,
+}
+
+/// Per-signal overrides of the base endpoint and protocol, as the
+/// `OTEL_EXPORTER_OTLP_<SIGNAL>_*` variables allow.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SignalOverride {
+    pub(crate) endpoint: Option<String>,
+    pub(crate) protocol: Option<Protocol>,
+}
+
 /// Format of the stdout log lines.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -152,6 +183,9 @@ pub struct TelemetryConfig {
     pub(crate) exporter: Exporter,
     pub(crate) otlp_endpoint: Option<Endpoint>,
     pub(crate) otlp_protocol: Option<Protocol>,
+    pub(crate) otlp_traces: SignalOverride,
+    pub(crate) otlp_metrics: SignalOverride,
+    pub(crate) otlp_logs: SignalOverride,
     pub(crate) sample_ratio: Option<f64>,
     pub(crate) metrics_interval: Option<Duration>,
     pub(crate) log_filter: Option<String>,
@@ -176,6 +210,9 @@ impl TelemetryConfig {
             exporter: Exporter::default(),
             otlp_endpoint: None,
             otlp_protocol: None,
+            otlp_traces: SignalOverride::default(),
+            otlp_metrics: SignalOverride::default(),
+            otlp_logs: SignalOverride::default(),
             sample_ratio: None,
             metrics_interval: None,
             log_filter: None,
@@ -247,6 +284,23 @@ impl TelemetryConfig {
                 None => eprintln!(
                     "telemetry: ignoring OTEL_EXPORTER_OTLP_PROTOCOL={value:?} (unsupported protocol, or its feature is disabled)"
                 ),
+            }
+        }
+        for (signal, overrides) in [
+            ("TRACES", &mut self.otlp_traces),
+            ("METRICS", &mut self.otlp_metrics),
+            ("LOGS", &mut self.otlp_logs),
+        ] {
+            if let Some(endpoint) = var(&format!("OTEL_EXPORTER_OTLP_{signal}_ENDPOINT")) {
+                overrides.endpoint = Some(endpoint);
+            }
+            if let Some(value) = var(&format!("OTEL_EXPORTER_OTLP_{signal}_PROTOCOL")) {
+                match Protocol::parse(&value) {
+                    Some(protocol) => overrides.protocol = Some(protocol),
+                    None => eprintln!(
+                        "telemetry: ignoring OTEL_EXPORTER_OTLP_{signal}_PROTOCOL={value:?} (unsupported protocol, or its feature is disabled)"
+                    ),
+                }
             }
         }
         if var("OTEL_SDK_DISABLED").and_then(|v| parse_bool(&v)) == Some(true) {
@@ -408,22 +462,47 @@ impl TelemetryConfig {
         crate::init::try_init(self)
     }
 
-    /// The transport and base URL to export to, when OTLP export is possible:
-    /// an endpoint is configured and a transport is compiled in.
+    /// Where one signal's exporter sends to, honouring that signal's
+    /// `OTEL_EXPORTER_OTLP_<SIGNAL>_*` overrides before the base settings.
+    /// `None` when no endpoint applies to the signal, which leaves it off.
     #[cfg_attr(
         not(any(feature = "otlp-grpc", feature = "otlp-http")),
         allow(dead_code)
     )]
-    pub(crate) fn otlp_target(&self) -> Option<(Protocol, String)> {
-        let protocol = self.otlp_protocol.or_else(Protocol::preferred)?;
-        let endpoint = match self.otlp_endpoint.as_ref()? {
+    pub(crate) fn otlp_target_for(&self, signal: Signal) -> Option<SignalTarget> {
+        let overrides = match signal {
+            Signal::Traces => &self.otlp_traces,
+            Signal::Metrics => &self.otlp_metrics,
+            Signal::Logs => &self.otlp_logs,
+        };
+        let protocol = overrides
+            .protocol
+            .or(self.otlp_protocol)
+            .or_else(Protocol::preferred)?;
+        let (endpoint, exact) = match &overrides.endpoint {
+            Some(endpoint) => (endpoint.clone(), true),
+            None => (self.base_endpoint(protocol)?, false),
+        };
+        Some(SignalTarget {
+            protocol,
+            endpoint,
+            exact,
+        })
+    }
+
+    /// The base endpoint resolved against a protocol's default port.
+    #[cfg_attr(
+        not(any(feature = "otlp-grpc", feature = "otlp-http")),
+        allow(dead_code)
+    )]
+    fn base_endpoint(&self, protocol: Protocol) -> Option<String> {
+        Some(match self.otlp_endpoint.as_ref()? {
             Endpoint::Url(url) => url.clone(),
             Endpoint::HostPort { host, port } => {
                 let port = port.as_deref().unwrap_or(protocol.default_port());
                 format!("http://{host}:{port}")
             }
-        };
-        Some((protocol, endpoint))
+        })
     }
 
     /// The resource describing this service.
@@ -481,7 +560,9 @@ mod tests {
 
     #[cfg(any(feature = "otlp-grpc", feature = "otlp-http"))]
     fn endpoint(config: &TelemetryConfig) -> Option<String> {
-        config.otlp_target().map(|(_, endpoint)| endpoint)
+        config
+            .otlp_target_for(Signal::Traces)
+            .map(|target| target.endpoint)
     }
 
     fn attribute(resource: &Resource, key: &'static str) -> Option<String> {
@@ -558,14 +639,78 @@ mod tests {
             ],
         );
         assert_eq!(
-            config.otlp_target(),
-            Some((Protocol::HttpProtobuf, "http://collector:4318".to_string()))
+            config.otlp_target_for(Signal::Traces),
+            Some(SignalTarget {
+                protocol: Protocol::HttpProtobuf,
+                endpoint: "http://collector:4318".to_string(),
+                exact: false,
+            })
         );
 
         // A protocol chosen after the overlay still gets its own default port.
         let config = overlay(TelemetryConfig::new("svc"), &[("OTEL_HOST", "collector")])
             .otlp_protocol(Protocol::HttpProtobuf);
         assert_eq!(endpoint(&config).as_deref(), Some("http://collector:4318"));
+    }
+
+    #[cfg(any(feature = "otlp-grpc", feature = "otlp-http"))]
+    #[test]
+    fn a_per_signal_endpoint_overrides_the_base_for_that_signal_only() {
+        let config = overlay(
+            TelemetryConfig::new("svc"),
+            &[
+                ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4317"),
+                (
+                    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+                    "http://traces.internal:4317",
+                ),
+            ],
+        );
+
+        let traces = config.otlp_target_for(Signal::Traces).expect("traces");
+        assert_eq!(traces.endpoint, "http://traces.internal:4317");
+        assert!(traces.exact, "a per-signal endpoint is used as given");
+
+        let metrics = config.otlp_target_for(Signal::Metrics).expect("metrics");
+        assert_eq!(metrics.endpoint, "http://collector:4317");
+        assert!(!metrics.exact, "the base endpoint gets the signal path");
+    }
+
+    #[cfg(any(feature = "otlp-grpc", feature = "otlp-http"))]
+    #[test]
+    fn a_per_signal_endpoint_alone_enables_only_that_signal() {
+        let config = overlay(
+            TelemetryConfig::new("svc"),
+            &[(
+                "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+                "http://logs.internal:4317",
+            )],
+        );
+
+        assert!(config.otlp_target_for(Signal::Logs).is_some());
+        assert!(config.otlp_target_for(Signal::Traces).is_none());
+        assert!(config.otlp_target_for(Signal::Metrics).is_none());
+    }
+
+    #[cfg(all(feature = "otlp-grpc", feature = "otlp-http"))]
+    #[test]
+    fn a_per_signal_protocol_overrides_the_base_protocol() {
+        let config = overlay(
+            TelemetryConfig::new("svc"),
+            &[
+                ("OTEL_HOST", "collector"),
+                ("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "http/protobuf"),
+            ],
+        );
+
+        let traces = config.otlp_target_for(Signal::Traces).expect("traces");
+        assert_eq!(traces.protocol, Protocol::Grpc);
+        assert_eq!(traces.endpoint, "http://collector:4317");
+
+        // The protocol override also drives the default port.
+        let metrics = config.otlp_target_for(Signal::Metrics).expect("metrics");
+        assert_eq!(metrics.protocol, Protocol::HttpProtobuf);
+        assert_eq!(metrics.endpoint, "http://collector:4318");
     }
 
     #[test]
