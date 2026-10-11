@@ -22,8 +22,10 @@ use crate::guard::OtelGuard;
 ///
 /// Start from [`new`](Self::new) for pure defaults or [`from_env`](Self::from_env)
 /// to also read the environment, then adjust with the setters. Precedence is
-/// simply call order: a setter called after [`with_env`](Self::with_env)
-/// overrides the environment, one called before it acts as a fallback.
+/// simply call order, per setting: a setter called after
+/// [`with_env`](Self::with_env) overrides that setting's variable, one called
+/// before it acts as a fallback. A default setter does not override a
+/// per-signal variable; the `..._for_all` setters do.
 ///
 /// ```
 /// use telemetry::{LogFormat, TelemetryConfig};
@@ -32,7 +34,7 @@ use crate::guard::OtelGuard;
 ///     .service_version(env!("CARGO_PKG_VERSION"))
 ///     // Anything set above can still be overridden by the environment...
 ///     .with_env()
-///     // ...and anything set below always wins.
+///     // ...and anything set below wins over its own variable.
 ///     .log_format(LogFormat::Pretty);
 /// # let _ = config;
 /// ```
@@ -247,36 +249,84 @@ impl TelemetryConfig {
         self
     }
 
-    /// Sets the collector endpoint, e.g. `http://localhost:4317`.
+    /// Sets the default collector endpoint, e.g. `http://localhost:4317`,
+    /// used by every signal without its own endpoint. Per-signal endpoints
+    /// set earlier by code or environment are kept; to replace those too,
+    /// use [`otlp_endpoint_for_all`](Self::otlp_endpoint_for_all).
     ///
-    /// This is the base URL for all three signals. Over HTTP the standard
-    /// `/v1/traces`, `/v1/metrics` and `/v1/logs` paths are appended to it. An
-    /// `https://` endpoint needs the `otlp-grpc-tls` or `otlp-http-tls`
-    /// feature.
-    ///
-    /// Called after [`with_env`](Self::with_env), this also discards any
-    /// per-signal `OTEL_EXPORTER_OTLP_<SIGNAL>_ENDPOINT` the overlay read:
-    /// precedence is call order, and a later setter wins over the whole
-    /// environment, not just its own variable.
+    /// Over HTTP the standard `/v1/traces`, `/v1/metrics` and `/v1/logs`
+    /// paths are appended to it. An `https://` endpoint needs the
+    /// `otlp-grpc-tls` or `otlp-http-tls` feature.
     pub fn otlp_endpoint(mut self, endpoint: impl Into<String>) -> Self {
         self.otlp_endpoint = Some(Endpoint::Url(endpoint.into()));
-        self.otlp_traces.endpoint = None;
-        self.otlp_metrics.endpoint = None;
-        self.otlp_logs.endpoint = None;
         self
     }
 
-    /// Chooses the OTLP transport. Defaults to gRPC when the `otlp-grpc`
-    /// feature is enabled and to HTTP otherwise.
-    ///
-    /// Called after [`with_env`](Self::with_env), this also discards any
-    /// per-signal `OTEL_EXPORTER_OTLP_<SIGNAL>_PROTOCOL` the overlay read,
-    /// for the same reason as [`otlp_endpoint`](Self::otlp_endpoint).
+    /// [`otlp_endpoint`](Self::otlp_endpoint), but also discards every
+    /// per-signal endpoint set earlier, so all three signals go here. After
+    /// [`with_env`](Self::with_env), this is the one that guarantees no
+    /// environment-provided endpoint still redirects a signal.
+    pub fn otlp_endpoint_for_all(mut self, endpoint: impl Into<String>) -> Self {
+        self.otlp_traces.endpoint = None;
+        self.otlp_metrics.endpoint = None;
+        self.otlp_logs.endpoint = None;
+        self.otlp_endpoint(endpoint)
+    }
+
+    /// Sends spans to their own endpoint, used exactly as given (no
+    /// `/v1/traces` appended). Overrides the base endpoint for this signal.
+    pub fn otlp_traces_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.otlp_traces.endpoint = Some(endpoint.into());
+        self
+    }
+
+    /// Sends metrics to their own endpoint, used exactly as given (no
+    /// `/v1/metrics` appended). Overrides the base endpoint for this signal.
+    pub fn otlp_metrics_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.otlp_metrics.endpoint = Some(endpoint.into());
+        self
+    }
+
+    /// Sends log records to their own endpoint, used exactly as given (no
+    /// `/v1/logs` appended). Overrides the base endpoint for this signal.
+    pub fn otlp_logs_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.otlp_logs.endpoint = Some(endpoint.into());
+        self
+    }
+
+    /// Sets the default OTLP transport, used by every signal without its own.
+    /// Per-signal protocols set earlier are kept; to replace those too, use
+    /// [`otlp_protocol_for_all`](Self::otlp_protocol_for_all). Defaults to
+    /// gRPC when the `otlp-grpc` feature is enabled and to HTTP otherwise.
     pub fn otlp_protocol(mut self, protocol: Protocol) -> Self {
         self.otlp_protocol = Some(protocol);
+        self
+    }
+
+    /// [`otlp_protocol`](Self::otlp_protocol), but also discards every
+    /// per-signal protocol set earlier, so all three signals use this one.
+    pub fn otlp_protocol_for_all(mut self, protocol: Protocol) -> Self {
         self.otlp_traces.protocol = None;
         self.otlp_metrics.protocol = None;
         self.otlp_logs.protocol = None;
+        self.otlp_protocol(protocol)
+    }
+
+    /// Chooses the transport for spans only.
+    pub fn otlp_traces_protocol(mut self, protocol: Protocol) -> Self {
+        self.otlp_traces.protocol = Some(protocol);
+        self
+    }
+
+    /// Chooses the transport for metrics only.
+    pub fn otlp_metrics_protocol(mut self, protocol: Protocol) -> Self {
+        self.otlp_metrics.protocol = Some(protocol);
+        self
+    }
+
+    /// Chooses the transport for log records only.
+    pub fn otlp_logs_protocol(mut self, protocol: Protocol) -> Self {
+        self.otlp_logs.protocol = Some(protocol);
         self
     }
 
@@ -655,34 +705,105 @@ mod tests {
 
     #[cfg(any(feature = "otlp-grpc", feature = "otlp-http"))]
     #[test]
-    fn an_endpoint_set_after_the_overlay_wins_over_per_signal_variables() {
-        let config = overlay(
-            TelemetryConfig::new("svc"),
-            &[("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://injected:4317")],
-        )
-        .otlp_endpoint("http://collector:4317");
+    fn per_signal_setters_refine_the_base() {
+        let config = TelemetryConfig::new("svc")
+            .otlp_endpoint("http://collector:4317")
+            .otlp_traces_endpoint("http://traces.internal:4317/v1/traces");
 
         let traces = config.otlp_target_for(Signal::Traces).expect("traces");
-        assert_eq!(
-            traces.endpoint, "http://collector:4317",
-            "a setter after with_env overrides the environment, per-signal included"
-        );
+        assert_eq!(traces.endpoint, "http://traces.internal:4317/v1/traces");
+        assert!(traces.exact, "a per-signal endpoint is used as given");
+
+        let metrics = config.otlp_target_for(Signal::Metrics).expect("metrics");
+        assert_eq!(metrics.endpoint, "http://collector:4317");
+        assert!(!metrics.exact);
     }
 
     #[cfg(all(feature = "otlp-grpc", feature = "otlp-http"))]
     #[test]
-    fn a_protocol_set_after_the_overlay_wins_over_per_signal_variables() {
+    fn per_signal_protocol_setters_refine_the_base() {
+        let config = TelemetryConfig::new("svc")
+            .otlp_endpoint("http://collector:4317")
+            .otlp_logs_protocol(Protocol::HttpProtobuf);
+
+        assert_eq!(
+            config.otlp_target_for(Signal::Logs).expect("logs").protocol,
+            Protocol::HttpProtobuf
+        );
+        assert_eq!(
+            config
+                .otlp_target_for(Signal::Traces)
+                .expect("traces")
+                .protocol,
+            Protocol::Grpc
+        );
+    }
+
+    #[cfg(any(feature = "otlp-grpc", feature = "otlp-http"))]
+    #[test]
+    fn the_base_setters_preserve_per_signal_overrides() {
+        // An override set in code survives a later change of the default...
+        let config = TelemetryConfig::new("svc")
+            .otlp_traces_endpoint("http://traces.internal:4317")
+            .otlp_endpoint("http://collector:4317");
+
+        let traces = config.otlp_target_for(Signal::Traces).expect("traces");
+        assert_eq!(traces.endpoint, "http://traces.internal:4317");
+        assert!(traces.exact);
+        let metrics = config.otlp_target_for(Signal::Metrics).expect("metrics");
+        assert_eq!(metrics.endpoint, "http://collector:4317");
+
+        // ...and so does one from the environment.
         let config = overlay(
             TelemetryConfig::new("svc"),
+            &[("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "http://logs.env:4317")],
+        )
+        .otlp_endpoint("http://collector:4317");
+        let logs = config.otlp_target_for(Signal::Logs).expect("logs");
+        assert_eq!(logs.endpoint, "http://logs.env:4317");
+    }
+
+    #[cfg(any(feature = "otlp-grpc", feature = "otlp-http"))]
+    #[test]
+    fn for_all_replaces_overrides_from_code_and_environment() {
+        let config = overlay(
+            TelemetryConfig::new("svc").otlp_traces_endpoint("http://traces.code:4317"),
+            &[("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "http://logs.env:4317")],
+        )
+        .otlp_endpoint_for_all("http://collector:4317");
+
+        for signal in [Signal::Traces, Signal::Metrics, Signal::Logs] {
+            let target = config.otlp_target_for(signal).expect("target");
+            assert_eq!(target.endpoint, "http://collector:4317", "{signal:?}");
+            assert!(!target.exact, "{signal:?}");
+        }
+    }
+
+    #[cfg(all(feature = "otlp-grpc", feature = "otlp-http"))]
+    #[test]
+    fn protocol_for_all_replaces_overrides_and_the_base_setter_does_not() {
+        let config = overlay(
+            TelemetryConfig::new("svc").otlp_logs_protocol(Protocol::HttpProtobuf),
             &[
                 ("OTEL_HOST", "collector"),
                 ("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "http/protobuf"),
             ],
         )
-        .otlp_protocol(Protocol::Grpc);
+        .otlp_protocol_for_all(Protocol::Grpc);
 
-        let metrics = config.otlp_target_for(Signal::Metrics).expect("metrics");
-        assert_eq!(metrics.protocol, Protocol::Grpc);
+        for signal in [Signal::Traces, Signal::Metrics, Signal::Logs] {
+            let target = config.otlp_target_for(signal).expect("target");
+            assert_eq!(target.protocol, Protocol::Grpc, "{signal:?}");
+        }
+
+        // The plain setter only changes the default.
+        let config = overlay(
+            TelemetryConfig::new("svc").otlp_logs_protocol(Protocol::HttpProtobuf),
+            &[("OTEL_HOST", "collector")],
+        )
+        .otlp_protocol(Protocol::Grpc);
+        let logs = config.otlp_target_for(Signal::Logs).expect("logs");
+        assert_eq!(logs.protocol, Protocol::HttpProtobuf);
     }
 
     #[test]

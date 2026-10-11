@@ -118,8 +118,9 @@ let guard = TelemetryConfig::new(env!("CARGO_PKG_NAME"))
     .environment("staging")
     // Everything above is a fallback the environment can override...
     .with_env()
-    // ...and everything below always wins.
-    .otlp_endpoint("http://collector.internal:4317")
+    // ...and everything below wins over its own variable. The _for_all
+    // setters also clear the per-signal OTEL_EXPORTER_OTLP_<SIGNAL>_* values.
+    .otlp_endpoint_for_all("http://collector.internal:4317")
     .otlp_protocol(Protocol::Grpc)
     .sample_ratio(0.1)
     .metrics_interval(Duration::from_secs(30))
@@ -181,6 +182,13 @@ Each signal can also go to its own backend, per the OTLP specification:
 used exactly as given — no `/v1/<signal>` path is appended — and the matching
 `..._PROTOCOL` variables override the transport. A per-signal endpoint with no
 base endpoint turns on just that signal.
+
+The same is available in code: `otlp_traces_endpoint(...)`,
+`otlp_traces_protocol(...)` and their metrics/logs twins. The plain
+`otlp_endpoint(...)` and `otlp_protocol(...)` setters change the shared
+default and keep per-signal overrides; the `..._for_all` variants also
+discard every override, which after `with_env()` is what guarantees no
+environment-provided endpoint still redirects a signal.
 
 Both filters use `RUST_LOG` syntax. They are independent: raising the log
 filter to quieten stdout never stops spans from being exported, and vice
