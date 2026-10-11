@@ -328,8 +328,19 @@ your own `Cargo.toml`. Cargo unifies the features.
 ## Version compatibility
 
 OpenTelemetry's global providers only connect code that is compiled against the
-same `opentelemetry` version. If your application or another dependency uses
-`opentelemetry` directly (for meters, say), keep it on the version below.
+same `opentelemetry` version. The crate therefore re-exports the pinned
+`opentelemetry`, `opentelemetry_sdk` and `tracing_opentelemetry` crates: use
+`telemetry::opentelemetry` (for meters, say) instead of declaring your own
+copy, and a version mismatch becomes impossible.
+
+```rust,no_run
+use telemetry::opentelemetry::global;
+
+let meter = global::meter("checkout");
+```
+
+If another dependency uses `opentelemetry` directly, keep it on the version
+below.
 
 | telemetry | opentelemetry | tracing-opentelemetry | tower-http |
 | --------- | ------------- | --------------------- | ---------- |

@@ -17,6 +17,12 @@ mod providers;
 #[cfg(feature = "stdout")]
 mod testing;
 
+// The OpenTelemetry globals only connect code compiled against the same
+// `opentelemetry` version, so the pinned crates are re-exported: depend on
+// `telemetry::opentelemetry` instead of declaring your own copy and the
+// versions cannot drift apart.
+pub use {opentelemetry, opentelemetry_sdk, tracing_opentelemetry};
+
 pub use config::{Exporter, LogFormat, Protocol, TelemetryConfig};
 pub use error::InitError;
 pub use guard::OtelGuard;
