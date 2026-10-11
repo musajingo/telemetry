@@ -28,7 +28,7 @@ async fn telemetry_initializes_once_per_process() {
     let guard = TelemetryConfig::new("svc")
         .service_version("1.2.3")
         .otlp_endpoint(format!("http://127.0.0.1:{}", closed_port()))
-        .metrics_interval(Duration::from_secs(3600))
+        .metrics_export_interval(Duration::from_secs(3600))
         .log_filter("info")
         .try_init()
         .expect("first init succeeds");

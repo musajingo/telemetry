@@ -26,11 +26,11 @@ pub use {opentelemetry, opentelemetry_sdk, tracing_opentelemetry};
 
 pub use config::{Exporter, LogFormat, Protocol, TelemetryConfig};
 pub use error::InitError;
-pub use guard::OtelGuard;
+pub use guard::TelemetryGuard;
 pub use lifecycle_error::LifecycleError;
 #[cfg(feature = "tower-http")]
 pub use http::{OtelMakeSpan, OtelOnResponse, http_trace_layer};
-pub use init::{init_telemetry, try_init_telemetry};
+pub use init::{init, try_init};
 pub use propagate::current_trace_headers;
 #[cfg(feature = "stdout")]
 pub use testing::init_testing_telemetry;

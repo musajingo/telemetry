@@ -13,7 +13,7 @@ use tracing_subscriber::{
 
 use crate::config::{LogFormat, TelemetryConfig};
 use crate::error::InitError;
-use crate::guard::OtelGuard;
+use crate::guard::TelemetryGuard;
 use crate::panic_hook::install_panic_hook;
 use crate::providers::Providers;
 
@@ -24,8 +24,8 @@ use crate::providers::Providers;
 ///
 /// # Panics
 ///
-/// Panics where [`try_init_telemetry`] would return an error.
-pub fn init_telemetry(service_name: impl Into<String>) -> OtelGuard {
+/// Panics where [`try_init`] would return an error.
+pub fn init(service_name: impl Into<String>) -> TelemetryGuard {
     TelemetryConfig::from_env(service_name).init()
 }
 
@@ -37,11 +37,11 @@ pub fn init_telemetry(service_name: impl Into<String>) -> OtelGuard {
 /// # Errors
 ///
 /// See [`TelemetryConfig::try_init`].
-pub fn try_init_telemetry(service_name: impl Into<String>) -> Result<OtelGuard, InitError> {
+pub fn try_init(service_name: impl Into<String>) -> Result<TelemetryGuard, InitError> {
     TelemetryConfig::from_env(service_name).try_init()
 }
 
-pub(crate) fn try_init(config: TelemetryConfig) -> Result<OtelGuard, InitError> {
+pub(crate) fn install(config: TelemetryConfig) -> Result<TelemetryGuard, InitError> {
     let filters = filters(&config)?;
 
     // The gRPC exporters capture the current Tokio runtime as they are
@@ -93,11 +93,11 @@ pub(crate) fn try_init(config: TelemetryConfig) -> Result<OtelGuard, InitError> 
     #[cfg(feature = "tower-http")]
     crate::http::set_trust_incoming_trace(config.trust_incoming_trace);
 
-    if config.panic_hook {
+    if config.capture_panics {
         install_panic_hook();
     }
 
-    Ok(OtelGuard {
+    Ok(TelemetryGuard {
         service: config.service_name,
         tracer_provider: providers.tracer,
         meter_provider: providers.meter,

@@ -158,7 +158,7 @@ fn meter_provider(
     resource: Resource,
 ) -> SdkMeterProvider {
     let reader = PeriodicReader::builder(exporter);
-    let reader = match config.metrics_interval {
+    let reader = match config.metrics_export_interval {
         Some(interval) => reader.with_interval(interval),
         // The SDK default honours OTEL_METRIC_EXPORT_INTERVAL.
         None => reader,

@@ -16,7 +16,7 @@ use super::log_format::LogFormat;
 use super::protocol::Protocol;
 use super::signal::{Signal, SignalOverride, SignalTarget};
 use crate::error::InitError;
-use crate::guard::OtelGuard;
+use crate::guard::TelemetryGuard;
 
 /// Everything [`try_init`](Self::try_init) needs to set telemetry up.
 ///
@@ -52,13 +52,13 @@ pub struct TelemetryConfig {
     pub(crate) otlp_metrics: SignalOverride,
     pub(crate) otlp_logs: SignalOverride,
     pub(crate) sample_ratio: Option<f64>,
-    pub(crate) metrics_interval: Option<Duration>,
+    pub(crate) metrics_export_interval: Option<Duration>,
     pub(crate) log_filter: Option<String>,
     pub(crate) trace_filter: Option<String>,
     pub(crate) propagators: Option<String>,
     pub(crate) log_format: LogFormat,
     pub(crate) trust_incoming_trace: bool,
-    pub(crate) panic_hook: bool,
+    pub(crate) capture_panics: bool,
     pub(crate) strict: bool,
 }
 
@@ -83,13 +83,13 @@ impl TelemetryConfig {
             otlp_metrics: SignalOverride::default(),
             otlp_logs: SignalOverride::default(),
             sample_ratio: None,
-            metrics_interval: None,
+            metrics_export_interval: None,
             log_filter: None,
             trace_filter: None,
             propagators: None,
             log_format: LogFormat::default(),
             trust_incoming_trace: false,
-            panic_hook: true,
+            capture_panics: true,
             strict: false,
         }
     }
@@ -347,8 +347,8 @@ impl TelemetryConfig {
     ///
     /// Left unset, the SDK default applies: `OTEL_METRIC_EXPORT_INTERVAL`
     /// (milliseconds) if present, otherwise 60 seconds.
-    pub fn metrics_interval(mut self, interval: Duration) -> Self {
-        self.metrics_interval = Some(interval);
+    pub fn metrics_export_interval(mut self, interval: Duration) -> Self {
+        self.metrics_export_interval = Some(interval);
         self
     }
 
@@ -406,8 +406,8 @@ impl TelemetryConfig {
     }
 
     /// Whether to report panics through `tracing`. Defaults to `true`.
-    pub fn panic_hook(mut self, install: bool) -> Self {
-        self.panic_hook = install;
+    pub fn capture_panics(mut self, capture: bool) -> Self {
+        self.capture_panics = capture;
         self
     }
 
@@ -427,7 +427,7 @@ impl TelemetryConfig {
     /// # Panics
     ///
     /// Panics where [`try_init`](Self::try_init) would return an error.
-    pub fn init(self) -> OtelGuard {
+    pub fn init(self) -> TelemetryGuard {
         match self.try_init() {
             Ok(guard) => guard,
             Err(err) => panic!("failed to initialize telemetry: {err}"),
@@ -448,8 +448,8 @@ impl TelemetryConfig {
     /// does not parse, [`Protocol::Grpc`] export is configured outside a
     /// Tokio runtime (which the gRPC client needs), or [`strict`](Self::strict)
     /// mode found that OTLP export will not happen.
-    pub fn try_init(self) -> Result<OtelGuard, InitError> {
-        crate::init::try_init(self)
+    pub fn try_init(self) -> Result<TelemetryGuard, InitError> {
+        crate::init::install(self)
     }
 
     /// Where one signal's exporter sends to, honouring that signal's

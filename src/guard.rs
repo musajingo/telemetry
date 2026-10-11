@@ -12,7 +12,7 @@ use crate::lifecycle_error::LifecycleError;
 /// Dropping it flushes whatever is still batched and stops the exporters,
 /// best-effort; call [`shutdown`](Self::shutdown) to handle failures instead.
 #[must_use = "telemetry stops as soon as the guard is dropped"]
-pub struct OtelGuard {
+pub struct TelemetryGuard {
     pub(crate) service: String,
     pub(crate) tracer_provider: Option<SdkTracerProvider>,
     pub(crate) meter_provider: Option<SdkMeterProvider>,
@@ -20,7 +20,7 @@ pub struct OtelGuard {
     pub(crate) exporter_failures: Vec<String>,
 }
 
-impl OtelGuard {
+impl TelemetryGuard {
     /// Whether spans are being exported. When false there are also no trace
     /// ids on log lines and no outbound trace headers.
     pub fn exports_traces(&self) -> bool {
@@ -130,7 +130,7 @@ impl OtelGuard {
 }
 
 // Best-effort: by now the log pipeline is the thing being torn down.
-impl Drop for OtelGuard {
+impl Drop for TelemetryGuard {
     fn drop(&mut self) {
         if let Err(err) = self.shutdown_now() {
             eprintln!("telemetry: shutdown failed ({err})");
@@ -144,8 +144,8 @@ mod tests {
 
     use super::*;
 
-    fn guard_with(provider: SdkTracerProvider) -> OtelGuard {
-        OtelGuard {
+    fn guard_with(provider: SdkTracerProvider) -> TelemetryGuard {
+        TelemetryGuard {
             service: "svc".to_string(),
             tracer_provider: Some(provider),
             meter_provider: None,

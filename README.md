@@ -30,7 +30,7 @@ usual.
   service just logs to stdout. An exporter that cannot be built disables that
   one signal instead of taking the service down. The guard reports what is
   actually exporting, and a strict mode fails init instead of degrading.
-- **`OtelGuard`** shuts the exporters down on drop (or fallibly, via
+- **`TelemetryGuard`** shuts the exporters down on drop (or fallibly, via
   `shutdown()`), flushes on demand for
   runtimes that freeze the process (AWS Lambda), and reports the error that
   ended `main`.
@@ -74,7 +74,7 @@ Requires Rust 1.98 or newer.
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Reads the environment. The name is used unless OTEL_SERVICE_NAME is set.
-    let guard = telemetry::init_telemetry(env!("CARGO_PKG_NAME"));
+    let guard = telemetry::init(env!("CARGO_PKG_NAME"));
 
     let result = run().await;
 
@@ -104,7 +104,7 @@ traces, logs and a metric.
 
 ## Configuration
 
-`init_telemetry(name)` is shorthand for
+`telemetry::init(name)` is shorthand for
 `TelemetryConfig::from_env(name).init()`. Use `TelemetryConfig` directly to
 set things in code:
 
@@ -124,7 +124,7 @@ let guard = TelemetryConfig::new(env!("CARGO_PKG_NAME"))
     .otlp_endpoint_for_all("http://collector.internal:4317")
     .otlp_protocol(Protocol::Grpc)
     .sample_ratio(0.1)
-    .metrics_interval(Duration::from_secs(30))
+    .metrics_export_interval(Duration::from_secs(30))
     .log_format(LogFormat::Json)
     .log_filter("info,sqlx=warn")
     .trace_filter("info")
@@ -311,7 +311,7 @@ every invocation:
 ```rust,no_run
 # #[tokio::main]
 # async fn main() {
-let guard = telemetry::init_telemetry("my-function");
+let guard = telemetry::init("my-function");
 
 // ...in the handler, once the response is ready:
 if let Err(err) = guard.force_flush() {
@@ -329,7 +329,7 @@ only that task while the process carries on with no record of it.
 Init installs a panic hook that first emits an `ERROR` event with the message,
 location, thread name and (when `RUST_BACKTRACE` is set) the backtrace, then
 calls the previous hook, so the usual stderr output is unchanged. Opt out with
-`TelemetryConfig::panic_hook(false)`.
+`TelemetryConfig::capture_panics(false)`.
 
 ## Testing and local runs
 
@@ -350,7 +350,7 @@ async fn my_test() {
 ```
 
 The `tracing` subscriber is global, so the setup happens once per test binary
-and the guard is shared: every call returns the same `&'static OtelGuard`
+and the guard is shared: every call returns the same `&'static TelemetryGuard`
 (the first caller's service name wins), and telemetry stays up until the
 process ends. Tests can call it in any order, and none of them can shut
 telemetry down for the others.

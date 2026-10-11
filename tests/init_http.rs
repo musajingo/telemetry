@@ -18,7 +18,7 @@ fn http_export_needs_no_async_runtime() {
     let guard = TelemetryConfig::new("svc")
         .otlp_protocol(Protocol::HttpProtobuf)
         .otlp_endpoint(format!("http://127.0.0.1:{}", closed_port()))
-        .metrics_interval(Duration::from_secs(3600))
+        .metrics_export_interval(Duration::from_secs(3600))
         .log_filter("info")
         .try_init()
         .expect("init succeeds outside a runtime");

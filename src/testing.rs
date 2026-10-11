@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::config::{Exporter, LogFormat, TelemetryConfig};
-use crate::guard::OtelGuard;
+use crate::guard::TelemetryGuard;
 
 /// Initializes a test-friendly telemetry setup that prints to stdout, once
 /// per test binary, and returns the shared guard.
@@ -31,17 +31,17 @@ use crate::guard::OtelGuard;
 ///
 /// Panics on the first call if a global `tracing` subscriber was already
 /// installed by something else.
-pub fn init_testing_telemetry(service_name: impl Into<String>) -> &'static OtelGuard {
-    static GUARD: OnceLock<OtelGuard> = OnceLock::new();
+pub fn init_testing_telemetry(service_name: impl Into<String>) -> &'static TelemetryGuard {
+    static GUARD: OnceLock<TelemetryGuard> = OnceLock::new();
     GUARD.get_or_init(|| {
         TelemetryConfig::new(service_name)
             .exporter(Exporter::Stdout)
             .sample_ratio(1.0)
-            .metrics_interval(Duration::from_secs(5))
+            .metrics_export_interval(Duration::from_secs(5))
             .log_filter("warn")
             .trace_filter("trace")
             .log_format(LogFormat::Pretty)
-            .panic_hook(false)
+            .capture_panics(false)
             .init()
     })
 }
