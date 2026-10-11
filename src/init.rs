@@ -81,7 +81,7 @@ pub(crate) fn try_init(config: TelemetryConfig) -> Result<OtelGuard, InitError> 
     // The OpenTelemetry globals are only claimed once the subscriber is in
     // place, so a failed init leaves them alone.
     global::set_text_map_propagator(crate::propagate::propagator_from_spec(
-        std::env::var("OTEL_PROPAGATORS").ok().as_deref(),
+        config.propagators.as_deref(),
     ));
     if let Some(provider) = &providers.tracer {
         global::set_tracer_provider(provider.clone());
@@ -216,18 +216,10 @@ struct Filters {
 /// Builds every filter, so a directive that does not parse fails init before
 /// any global state is touched.
 fn filters(config: &TelemetryConfig) -> Result<Filters, InitError> {
-    // The configured log filter, else `RUST_LOG`, else `info`.
-    let log_directives = match &config.log_filter {
-        Some(directives) => directives.clone(),
-        None => std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()),
-    };
-    // The configured trace filter, else `TELEMETRY_TRACE_FILTER`, else `info`.
-    // Deliberately not `RUST_LOG`: raising it to quieten logs must not also
-    // stop spans from being exported.
-    let trace_directives = match &config.trace_filter {
-        Some(directives) => directives.clone(),
-        None => std::env::var("TELEMETRY_TRACE_FILTER").unwrap_or_else(|_| "info".to_string()),
-    };
+    // The environment was already overlaid by `with_env`, so both filters
+    // come straight from the config.
+    let log_directives = config.log_filter.as_deref().unwrap_or("info");
+    let trace_directives = config.trace_filter.as_deref().unwrap_or("info");
 
     let log_filter = |directives: &str| {
         EnvFilter::try_new(directives).map_err(|source| InitError::InvalidLogFilter {
@@ -243,10 +235,10 @@ fn filters(config: &TelemetryConfig) -> Result<Filters, InitError> {
     };
 
     Ok(Filters {
-        stdout: EventsOnly(log_filter(&log_directives)?),
-        log_records: EventsOnly(log_filter(&log_directives)?),
-        spans: trace_filter(&trace_directives)?,
-        metrics: trace_filter(&trace_directives)?,
+        stdout: EventsOnly(log_filter(log_directives)?),
+        log_records: EventsOnly(log_filter(log_directives)?),
+        spans: trace_filter(trace_directives)?,
+        metrics: trace_filter(trace_directives)?,
     })
 }
 

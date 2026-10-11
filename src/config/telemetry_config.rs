@@ -53,6 +53,7 @@ pub struct TelemetryConfig {
     pub(crate) metrics_interval: Option<Duration>,
     pub(crate) log_filter: Option<String>,
     pub(crate) trace_filter: Option<String>,
+    pub(crate) propagators: Option<String>,
     pub(crate) log_format: LogFormat,
     pub(crate) trust_incoming_trace: bool,
     pub(crate) panic_hook: bool,
@@ -63,9 +64,10 @@ impl TelemetryConfig {
     /// A config with the given service name and default settings. Reads no
     /// environment variables.
     ///
-    /// The defaults: OTLP export (inactive until an endpoint is set) over gRPC
-    /// when the `otlp-grpc` feature is on, the SDK's sampler and metric interval, text logs filtered by `RUST_LOG`
-    /// (or `info`), inbound trace context not trusted, panic hook installed.
+    /// The defaults: OTLP export (inactive until an endpoint is set) over
+    /// gRPC when the `otlp-grpc` feature is on, the SDK's sampler and metric
+    /// interval, text logs, both filters at `info`, both W3C propagators,
+    /// inbound trace context not trusted, panic hook installed.
     pub fn new(service_name: impl Into<String>) -> Self {
         Self {
             service_name: service_name.into(),
@@ -82,6 +84,7 @@ impl TelemetryConfig {
             metrics_interval: None,
             log_filter: None,
             trace_filter: None,
+            propagators: None,
             log_format: LogFormat::default(),
             trust_incoming_trace: false,
             panic_hook: true,
@@ -97,7 +100,8 @@ impl TelemetryConfig {
 
     /// Overlays every setting that is present in the environment on top of
     /// the current values. Unset, blank and unparsable variables leave the
-    /// current value alone.
+    /// current value alone — except the filter and propagator variables,
+    /// which are stored as given and validated during init.
     ///
     /// | Variable | Setting |
     /// | --- | --- |
@@ -109,13 +113,16 @@ impl TelemetryConfig {
     /// | `OTEL_EXPORTER_OTLP_PROTOCOL` | [`otlp_protocol`](Self::otlp_protocol): `grpc` or `http/protobuf` |
     /// | `OTEL_SDK_DISABLED=true` | [`Exporter::None`] |
     /// | `OTEL_TRACES_SAMPLE_RATIO` | [`sample_ratio`](Self::sample_ratio) |
+    /// | `RUST_LOG` | [`log_filter`](Self::log_filter) |
+    /// | `TELEMETRY_TRACE_FILTER` | [`trace_filter`](Self::trace_filter) |
+    /// | `OTEL_PROPAGATORS` | [`propagators`](Self::propagators) |
     /// | `TELEMETRY_LOG_FORMAT` | [`log_format`](Self::log_format): `text`, `pretty` or `json` |
     /// | `TELEMETRY_TRUST_INCOMING_TRACE` | [`trust_incoming_trace`](Self::trust_incoming_trace) |
     /// | `TELEMETRY_STRICT` | [`strict`](Self::strict) |
     ///
-    /// `RUST_LOG` and the OpenTelemetry SDK's own variables are not part of
-    /// the overlay; they are read during init whenever the matching setting
-    /// was left unset. See the crate documentation for the list.
+    /// The OpenTelemetry SDK reads its own variables during init; see the
+    /// crate documentation for the list. Everything this crate reads goes
+    /// through this overlay.
     pub fn with_env(self) -> Self {
         self.with_env_from(|key| std::env::var(key).ok())
     }
@@ -179,6 +186,15 @@ impl TelemetryConfig {
             self = self.sample_ratio(ratio);
         }
 
+        if let Some(filter) = var("RUST_LOG") {
+            self.log_filter = Some(filter);
+        }
+        if let Some(filter) = var("TELEMETRY_TRACE_FILTER") {
+            self.trace_filter = Some(filter);
+        }
+        if let Some(propagators) = var("OTEL_PROPAGATORS") {
+            self.propagators = Some(propagators);
+        }
         if let Some(value) = var("TELEMETRY_LOG_FORMAT") {
             match LogFormat::parse(&value) {
                 Some(format) => self.log_format = format,
@@ -292,7 +308,8 @@ impl TelemetryConfig {
     /// [`trace_filter`](Self::trace_filter), so quietening the logs never
     /// drops traces.
     ///
-    /// Left unset, `RUST_LOG` is used, falling back to `info`.
+    /// Left unset, `info`. [`with_env`](Self::with_env) overlays `RUST_LOG`
+    /// onto this.
     pub fn log_filter(mut self, directives: impl Into<String>) -> Self {
         self.log_filter = Some(directives.into());
         self
@@ -302,9 +319,21 @@ impl TelemetryConfig {
     /// `RUST_LOG` syntax. Independent of [`log_filter`](Self::log_filter):
     /// raising one never silences the other.
     ///
-    /// Left unset, `TELEMETRY_TRACE_FILTER` is used, falling back to `info`.
+    /// Left unset, `info`. [`with_env`](Self::with_env) overlays
+    /// `TELEMETRY_TRACE_FILTER` onto this.
     pub fn trace_filter(mut self, directives: impl Into<String>) -> Self {
         self.trace_filter = Some(directives.into());
+        self
+    }
+
+    /// Chooses the propagators that carry context across services:
+    /// `tracecontext`, `baggage` or `none`, comma-separated. Unsupported
+    /// entries are reported during init and skipped.
+    ///
+    /// Left unset, both W3C propagators are installed.
+    /// [`with_env`](Self::with_env) overlays `OTEL_PROPAGATORS` onto this.
+    pub fn propagators(mut self, propagators: impl Into<String>) -> Self {
+        self.propagators = Some(propagators.into());
         self
     }
 
@@ -709,6 +738,36 @@ mod tests {
             &[("OTEL_SDK_DISABLED", "false")],
         );
         assert_eq!(config.exporter, Exporter::Otlp);
+    }
+
+    #[test]
+    fn the_filters_and_propagators_follow_call_order_precedence() {
+        // The overlay reads RUST_LOG, TELEMETRY_TRACE_FILTER and
+        // OTEL_PROPAGATORS like any other variable...
+        let config = overlay(
+            TelemetryConfig::new("svc")
+                .log_filter("info")
+                .trace_filter("info")
+                .propagators("none"),
+            &[
+                ("RUST_LOG", "debug"),
+                ("TELEMETRY_TRACE_FILTER", "warn"),
+                ("OTEL_PROPAGATORS", "baggage"),
+            ],
+        );
+        assert_eq!(config.log_filter.as_deref(), Some("debug"));
+        assert_eq!(config.trace_filter.as_deref(), Some("warn"));
+        assert_eq!(config.propagators.as_deref(), Some("baggage"));
+
+        // ...so a setter after the overlay wins.
+        let config = overlay(
+            TelemetryConfig::new("svc"),
+            &[("RUST_LOG", "debug"), ("OTEL_PROPAGATORS", "baggage")],
+        )
+        .log_filter("info")
+        .propagators("tracecontext");
+        assert_eq!(config.log_filter.as_deref(), Some("info"));
+        assert_eq!(config.propagators.as_deref(), Some("tracecontext"));
     }
 
     #[test]

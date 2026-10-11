@@ -168,6 +168,9 @@ Read by `with_env()` / `from_env()`:
 | `OTEL_EXPORTER_OTLP_PROTOCOL`    | `grpc` or `http/protobuf`. See [Transports](#transports)                                                                              |
 | `OTEL_SDK_DISABLED`              | `true` turns all export off                                                                                                           |
 | `OTEL_TRACES_SAMPLE_RATIO`       | Fraction of new traces to sample, `0.0` to `1.0`                                                                                      |
+| `RUST_LOG`                       | Log filter: stdout lines and OTLP log records. Defaults to `info`                                                                     |
+| `TELEMETRY_TRACE_FILTER`         | Span and metric filter, independent of the log filter. Defaults to `info`                                                             |
+| `OTEL_PROPAGATORS`               | `tracecontext`, `baggage` or `none`, comma-separated. Defaults to both                                                                |
 | `TELEMETRY_LOG_FORMAT`           | `text` (default), `pretty` or `json`                                                                                                  |
 | `TELEMETRY_TRUST_INCOMING_TRACE` | `true` continues inbound `traceparent` headers. See [HTTP servers](#http-servers)                                                     |
 | `TELEMETRY_STRICT`               | `true` fails init when OTLP export will not happen, instead of booting without it                                                     |
@@ -179,24 +182,22 @@ used exactly as given — no `/v1/<signal>` path is appended — and the matchin
 `..._PROTOCOL` variables override the transport. A per-signal endpoint with no
 base endpoint turns on just that signal.
 
-Read during init, whenever the matching setting was left unset:
+Both filters use `RUST_LOG` syntax. They are independent: raising the log
+filter to quieten stdout never stops spans from being exported, and vice
+versa.
+
+Read by the OpenTelemetry SDK itself during init, whenever the matching
+setting was left unset:
 
 | Variable                                         | Meaning                                                     |
 | ------------------------------------------------ | ----------------------------------------------------------- |
-| `RUST_LOG`                                       | Log filter: stdout lines and OTLP log records               |
-| `TELEMETRY_TRACE_FILTER`                         | Span and metric filter, independent of the log filter       |
-| `OTEL_PROPAGATORS`                               | `tracecontext`, `baggage` or `none`. Defaults to both       |
 | `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | Standard sampler selection. Defaults to sampling everything |
 | `OTEL_METRIC_EXPORT_INTERVAL`                    | Milliseconds between metric exports. Defaults to `60000`    |
 | `OTEL_RESOURCE_ATTRIBUTES`                       | Extra resource attributes, `key=value,key=value`            |
 
-Both filters use `RUST_LOG` syntax and default to `info`. They are
-independent: raising the log filter to quieten stdout never stops spans from
-being exported, and vice versa.
-
-The last three are read by the OpenTelemetry SDK itself, along with the batch
-processor tuning variables (`OTEL_BSP_*`, `OTEL_BLRP_*`) and the OTLP exporter's
-`OTEL_EXPORTER_OTLP_HEADERS`, `_TIMEOUT` and `_COMPRESSION`.
+The SDK also reads the batch processor tuning variables (`OTEL_BSP_*`,
+`OTEL_BLRP_*`) and the OTLP exporter's `OTEL_EXPORTER_OTLP_HEADERS`,
+`_TIMEOUT` and `_COMPRESSION`.
 
 ## Transports
 
