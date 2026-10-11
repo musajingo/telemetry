@@ -24,6 +24,12 @@ pub enum InitError {
         /// The parser's complaint.
         source: tracing_subscriber::filter::ParseError,
     },
+    /// OTLP over gRPC was configured, but no Tokio runtime is running. The
+    /// gRPC client needs one, so initialize inside the runtime (after
+    /// `#[tokio::main]` starts, for instance) or use the `otlp-http`
+    /// transport, which needs none.
+    #[cfg(feature = "otlp-grpc")]
+    NoTokioRuntime,
 }
 
 impl fmt::Display for InitError {
@@ -38,6 +44,10 @@ impl fmt::Display for InitError {
             Self::InvalidTraceFilter { directives, .. } => {
                 write!(f, "invalid trace filter {directives:?}")
             }
+            #[cfg(feature = "otlp-grpc")]
+            Self::NoTokioRuntime => f.write_str(
+                "OTLP over gRPC needs a running Tokio runtime; initialize inside the runtime or use the otlp-http transport",
+            ),
         }
     }
 }
@@ -49,6 +59,8 @@ impl std::error::Error for InitError {
             Self::InvalidLogFilter { source, .. } | Self::InvalidTraceFilter { source, .. } => {
                 Some(source)
             }
+            #[cfg(feature = "otlp-grpc")]
+            Self::NoTokioRuntime => None,
         }
     }
 }

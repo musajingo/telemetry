@@ -19,8 +19,9 @@ self_named_module_files = "deny"
 
 [features]
 default       = ["otlp-grpc", "tower-http", "json"]
-# OTLP over gRPC (tonic). Needs a Tokio runtime.
-otlp-grpc     = ["dep:opentelemetry-otlp", "opentelemetry-otlp/grpc-tonic"]
+# OTLP over gRPC (tonic). Needs a Tokio runtime; `tokio` is only here to
+# detect its absence and fail init with an error instead of tonic's panic.
+otlp-grpc     = ["dep:opentelemetry-otlp", "opentelemetry-otlp/grpc-tonic", "dep:tokio"]
 # OTLP over HTTP with protobuf payloads (blocking reqwest client on the
 # exporters' own threads, so no async runtime is needed).
 otlp-http     = ["dep:opentelemetry-otlp", "opentelemetry-otlp/http-proto", "opentelemetry-otlp/reqwest-blocking-client"]
@@ -52,6 +53,8 @@ opentelemetry-http                 = { version = "0.32", optional = true }
 # tower-http version the application uses (axum 0.8 is on 0.6).
 tower-http                         = { version = "0.6", features = ["trace"], optional = true }
 http                               = { version = "1", optional = true }
+# Only for `Handle::try_current`; tonic pulls the runtime in anyway.
+tokio                              = { version = "1.42", default-features = false, features = ["rt"], optional = true }
 # The JSON log layer. The feature pins it to the same tracing-opentelemetry
 # version as above, which is what lets it read the otel span extensions.
 json-subscriber                    = { version = "0.3.1", features = ["tracing-opentelemetry-0-33"], optional = true }

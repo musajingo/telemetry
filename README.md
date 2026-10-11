@@ -60,7 +60,8 @@ telemetry` moves it forward.
 For the API docs, run `cargo doc --open -p telemetry` in your project.
 
 gRPC is the default transport. Its client is `tonic`, so telemetry must be
-initialized inside a Tokio runtime. OTLP over HTTP is available too and needs
+initialized inside a Tokio runtime; outside one, `try_init` reports the
+missing runtime as a setup error. OTLP over HTTP is available too and needs
 no async runtime. See [Transports](#transports).
 
 Requires Rust 1.98 or newer.
@@ -137,8 +138,9 @@ setters after it are overrides. `TelemetryConfig::new` alone reads none of the
 variables below.
 
 `init()` panics where `try_init()` returns an `InitError`: a global `tracing`
-subscriber is already installed, or the log or trace filter does not parse. A failed
-init leaves all global state untouched.
+subscriber is already installed, a filter does not parse, or gRPC export is
+configured outside a Tokio runtime. A failed init leaves all global state
+untouched.
 
 A library cannot see the name or version of the binary it is linked into, which
 is why both are passed in. `service.version` and `deployment.environment.name`

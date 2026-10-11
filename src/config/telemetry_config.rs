@@ -342,16 +342,16 @@ impl TelemetryConfig {
     /// Installs the global subscriber and returns the guard that owns the
     /// telemetry providers.
     ///
-    /// With [`Protocol::Grpc`] this must be called inside a Tokio runtime,
-    /// which the gRPC client needs. An exporter that cannot be built is
-    /// reported on stderr and that signal is disabled, rather than failing
-    /// the whole service over its telemetry.
+    /// An exporter that cannot be built is reported on stderr and that
+    /// signal is disabled, rather than failing the whole service over its
+    /// telemetry.
     ///
     /// # Errors
     ///
     /// Fails, leaving every global untouched, when a global `tracing`
-    /// subscriber is already installed, or the configured log or trace
-    /// filter does not parse.
+    /// subscriber is already installed, the configured log or trace filter
+    /// does not parse, or [`Protocol::Grpc`] export is configured outside a
+    /// Tokio runtime, which the gRPC client needs.
     pub fn try_init(self) -> Result<OtelGuard, InitError> {
         crate::init::try_init(self)
     }

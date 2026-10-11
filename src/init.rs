@@ -43,6 +43,15 @@ pub fn try_init_telemetry(service_name: impl Into<String>) -> Result<OtelGuard, 
 
 pub(crate) fn try_init(config: TelemetryConfig) -> Result<OtelGuard, InitError> {
     let filters = filters(&config)?;
+
+    // The gRPC exporters capture the current Tokio runtime as they are
+    // built, and tonic's machinery panics when there is none. Catch that
+    // here, before any global state is touched, and make it a setup error.
+    #[cfg(feature = "otlp-grpc")]
+    if needs_tokio_runtime(&config) && tokio::runtime::Handle::try_current().is_err() {
+        return Err(InitError::NoTokioRuntime);
+    }
+
     let providers = Providers::build(&config);
 
     subscriber(&config, &providers, filters)
@@ -74,6 +83,23 @@ pub(crate) fn try_init(config: TelemetryConfig) -> Result<OtelGuard, InitError> 
         meter_provider: providers.meter,
         logger_provider: providers.logger,
     })
+}
+
+/// Whether this config will build a gRPC exporter, the one transport that
+/// needs a Tokio runtime. False whenever nothing will be exported over gRPC:
+/// another exporter, no endpoint for any signal, or every signal on HTTP.
+#[cfg(feature = "otlp-grpc")]
+fn needs_tokio_runtime(config: &TelemetryConfig) -> bool {
+    use crate::config::{Exporter, Protocol, Signal};
+
+    config.exporter == Exporter::Otlp
+        && [Signal::Traces, Signal::Metrics, Signal::Logs]
+            .into_iter()
+            .any(|signal| {
+                config
+                    .otlp_target_for(signal)
+                    .is_some_and(|target| target.protocol == Protocol::Grpc)
+            })
 }
 
 /// An [`EnvFilter`] that gates events only: every span passes. On the log
