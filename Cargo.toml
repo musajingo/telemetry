@@ -1,0 +1,55 @@
+[package]
+name = "telemetry"
+description = "One-call OpenTelemetry setup for tracing-based services: OTLP traces, metrics and logs, a flush-on-drop guard, panic capture and HTTP trace propagation."
+authors = ["Musa Mahmoud Jingo <dev.musajingo@pm.me>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/musamahmoudjingo/telemetry"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+readme = "README.md"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[features]
+default       = ["otlp-grpc", "tower-http", "json"]
+# OTLP over gRPC (tonic). Needs a Tokio runtime.
+otlp-grpc     = ["dep:opentelemetry-otlp", "opentelemetry-otlp/grpc-tonic"]
+# OTLP over HTTP with protobuf payloads (blocking reqwest client on the
+# exporters' own threads, so no async runtime is needed).
+otlp-http     = ["dep:opentelemetry-otlp", "opentelemetry-otlp/http-proto", "opentelemetry-otlp/reqwest-blocking-client"]
+# TLS for `https://` endpoints, per transport, with the platform's root store.
+otlp-grpc-tls = ["otlp-grpc", "opentelemetry-otlp/tls", "opentelemetry-otlp/tls-roots"]
+otlp-http-tls = ["otlp-http", "opentelemetry-otlp/reqwest-rustls"]
+# `OtelMakeSpan` and `OtelOnResponse` for tower-http's `TraceLayer`.
+tower-http    = ["dep:tower-http", "dep:http", "dep:opentelemetry-http"]
+# `LogFormat::Json` for the stdout log layer.
+json          = ["tracing-subscriber/json"]
+# `Exporter::Stdout` and `init_testing_telemetry`: print telemetry instead of
+# sending it to a collector.
+stdout        = ["dep:opentelemetry-stdout"]
+
+[dependencies]
+tracing                            = "0.1.41"
+tracing-subscriber                 = { version = "0.3.22", default-features = false, features = ["std", "registry", "fmt", "env-filter", "ansi"] }
+tracing-opentelemetry              = { version = "0.33", features = ["metrics"] }
+opentelemetry                      = "0.32"
+opentelemetry_sdk                  = { version = "0.32", features = ["trace", "metrics", "logs"] }
+opentelemetry-appender-tracing     = "0.32"
+# The transport (and with it tonic or reqwest) comes from the `otlp-*` features.
+opentelemetry-otlp                 = { version = "0.32", default-features = false, features = ["trace", "metrics", "logs", "internal-logs"], optional = true }
+opentelemetry-semantic-conventions = { version = "0.32", features = ["semconv_experimental"] }
+opentelemetry-stdout               = { version = "0.32", features = ["trace", "metrics"], optional = true }
+opentelemetry-http                 = { version = "0.32", optional = true }
+# `MakeSpan` and `OnResponse` are tower-http traits, so this must be the same
+# tower-http version the application uses (axum 0.8 is on 0.6).
+tower-http                         = { version = "0.6", features = ["trace"], optional = true }
+http                               = { version = "1", optional = true }
+
+[dev-dependencies]
+# In-memory exporters for asserting on what the layers produce.
+opentelemetry_sdk = { version = "0.32", features = ["testing"] }
+# The OTLP/gRPC exporters are built inside a Tokio runtime.
+tokio = { version = "1.42", features = ["macros", "rt-multi-thread"] }
