@@ -1510,6 +1510,7 @@ dependencies = [
  "opentelemetry_sdk",
  "serde_json",
  "tokio",
+ "tower",
  "tower-http",
  "tracing",
  "tracing-opentelemetry",

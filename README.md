@@ -237,17 +237,24 @@ from inside one. `http/json` is not supported.
 
 ## HTTP servers
 
-`OtelMakeSpan` and `OtelOnResponse` plug into tower-http's `TraceLayer`, which
-works with axum, tonic and any other tower service:
+`http_trace_layer()` is a ready-made tower-http `TraceLayer`, which works
+with axum, tonic and any other tower service:
+
+```rust,ignore
+let app = axum::Router::new().layer(telemetry::http_trace_layer());
+```
+
+It is built from `OtelMakeSpan` and `OtelOnResponse`, which plug into
+tower-http's `TraceLayer` directly when you want different parts:
 
 ```rust
 use telemetry::{OtelMakeSpan, OtelOnResponse};
 use tower_http::trace::{DefaultOnResponse, TraceLayer};
 
 let trace_layer = TraceLayer::new_for_http()
-    .make_span_with(OtelMakeSpan)
+    .make_span_with(OtelMakeSpan::default())
     .on_response(OtelOnResponse::new(
-        DefaultOnResponse::new().level(tracing::Level::INFO),
+        DefaultOnResponse::new().level(tracing::Level::DEBUG),
     ));
 # let _ = trace_layer;
 ```
@@ -261,8 +268,9 @@ Headers carry bearer tokens and session cookies, and query strings are where
 emails, tokens and signatures end up. Neither belongs in logs or a trace store.
 
 Continuing an upstream trace is opt-in, through
-`TelemetryConfig::trust_incoming_trace(true)` or
-`TELEMETRY_TRUST_INCOMING_TRACE=true`. Whoever controls the inbound
+`TelemetryConfig::trust_incoming_trace(true)`,
+`TELEMETRY_TRUST_INCOMING_TRACE=true`, or for one layer only,
+`OtelMakeSpan::default().trust_incoming_trace(true)`. Whoever controls the inbound
 `traceparent` controls your sampling decision (and so your bill) and your trace
 identity. Enable it only where every caller is trusted, or where a proxy in
 front of the service strips trace headers sent by clients.

@@ -27,7 +27,7 @@ pub use config::{Exporter, LogFormat, Protocol, TelemetryConfig};
 pub use error::InitError;
 pub use guard::OtelGuard;
 #[cfg(feature = "tower-http")]
-pub use http::{OtelMakeSpan, OtelOnResponse};
+pub use http::{OtelMakeSpan, OtelOnResponse, http_trace_layer};
 pub use init::{init_telemetry, try_init_telemetry};
 pub use propagate::current_trace_headers;
 #[cfg(feature = "stdout")]

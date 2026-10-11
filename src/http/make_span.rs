@@ -21,7 +21,18 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 /// Headers are never recorded on the span: they carry `Authorization` tokens
 /// and session cookies, which must not reach stdout logs or the trace store.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct OtelMakeSpan;
+pub struct OtelMakeSpan {
+    trust_override: Option<bool>,
+}
+
+impl OtelMakeSpan {
+    /// Trusts (or distrusts) inbound trace context for this layer only,
+    /// instead of the configured global setting.
+    pub fn trust_incoming_trace(mut self, trust: bool) -> Self {
+        self.trust_override = Some(trust);
+        self
+    }
+}
 
 static TRUST_INCOMING_TRACE: OnceLock<bool> = OnceLock::new();
 
@@ -55,7 +66,7 @@ impl<B> MakeSpan<B> for OtelMakeSpan {
             http.response.status_code = tracing::field::Empty,
             otel.status_code = tracing::field::Empty,
         );
-        if trust_incoming_trace() {
+        if self.trust_override.unwrap_or_else(trust_incoming_trace) {
             let parent = global::get_text_map_propagator(|propagator| {
                 propagator.extract(&HeaderExtractor(request.headers()))
             });
@@ -64,5 +75,40 @@ impl<B> MakeSpan<B> for OtelMakeSpan {
             let _ = span.set_parent(parent);
         }
         span
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use opentelemetry::trace::{TraceContextExt as _, TracerProvider as _};
+    use opentelemetry_sdk::propagation::TraceContextPropagator;
+    use opentelemetry_sdk::trace::SdkTracerProvider;
+    use tracing_opentelemetry::OpenTelemetryLayer;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    use super::*;
+
+    #[test]
+    fn a_per_layer_trust_override_continues_the_inbound_trace() {
+        global::set_text_map_propagator(TraceContextPropagator::new());
+        let provider = SdkTracerProvider::builder().build();
+        let subscriber = tracing_subscriber::registry()
+            .with(OpenTelemetryLayer::new(provider.tracer("svc")));
+        let _default = tracing::subscriber::set_default(subscriber);
+
+        let request = http::Request::builder()
+            .uri("/orders")
+            .header(
+                "traceparent",
+                "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+            )
+            .body(())
+            .expect("a request");
+
+        let span = OtelMakeSpan::default()
+            .trust_incoming_trace(true)
+            .make_span(&request);
+        let trace_id = span.context().span().span_context().trace_id();
+        assert_eq!(trace_id.to_string(), "0af7651916cd43dd8448eb211c80319c");
     }
 }
