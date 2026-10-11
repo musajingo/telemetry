@@ -47,9 +47,10 @@ async fn telemetry_initializes_once_per_process() {
 
     // Both W3C propagators are installed by default, so baggage set upstream
     // is carried through and out of this service.
-    let fields: Vec<String> = telemetry::opentelemetry::global::get_text_map_propagator(
-        |propagator| propagator.fields().map(String::from).collect(),
-    );
+    let fields: Vec<String> =
+        telemetry::opentelemetry::global::get_text_map_propagator(|propagator| {
+            propagator.fields().map(String::from).collect()
+        });
     assert!(fields.contains(&"baggage".to_string()), "{fields:?}");
 
     let err = TelemetryConfig::new("svc")

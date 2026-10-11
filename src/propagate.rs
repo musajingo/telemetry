@@ -90,7 +90,10 @@ mod tests {
     #[test]
     fn otel_propagators_selects_the_propagators() {
         let selected = fields(&propagator_from_spec(Some("tracecontext")));
-        assert!(selected.contains(&"traceparent".to_string()), "{selected:?}");
+        assert!(
+            selected.contains(&"traceparent".to_string()),
+            "{selected:?}"
+        );
         assert!(!selected.contains(&"baggage".to_string()), "{selected:?}");
     }
 

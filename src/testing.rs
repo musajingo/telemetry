@@ -10,7 +10,8 @@ use crate::guard::OtelGuard;
 /// For tests and local runs where you want to see spans and metrics without a
 /// collector. Every span is sampled and printed as it ends, metrics are
 /// printed every five seconds, and log lines are pretty-printed from `WARN`
-/// up. Reads no environment variables.
+/// up. The log filter does not touch the spans. Reads no environment
+/// variables.
 ///
 /// The subscriber is global, so this can run once per test binary. Use
 /// [`TelemetryConfig::try_init`] with [`Exporter::Stdout`] where several tests
@@ -35,6 +36,7 @@ pub fn init_testing_telemetry(service_name: impl Into<String>) -> OtelGuard {
         .sample_ratio(1.0)
         .metrics_interval(Duration::from_secs(5))
         .log_filter("warn")
+        .trace_filter("trace")
         .log_format(LogFormat::Pretty)
         .panic_hook(false)
         .init()

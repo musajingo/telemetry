@@ -17,6 +17,13 @@ pub enum InitError {
         /// The parser's complaint.
         source: tracing_subscriber::filter::ParseError,
     },
+    /// The configured trace filter is not valid `RUST_LOG` syntax.
+    InvalidTraceFilter {
+        /// The directives that failed to parse.
+        directives: String,
+        /// The parser's complaint.
+        source: tracing_subscriber::filter::ParseError,
+    },
 }
 
 impl fmt::Display for InitError {
@@ -28,6 +35,9 @@ impl fmt::Display for InitError {
             Self::InvalidLogFilter { directives, .. } => {
                 write!(f, "invalid log filter {directives:?}")
             }
+            Self::InvalidTraceFilter { directives, .. } => {
+                write!(f, "invalid trace filter {directives:?}")
+            }
         }
     }
 }
@@ -36,7 +46,9 @@ impl std::error::Error for InitError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::AlreadyInitialized => None,
-            Self::InvalidLogFilter { source, .. } => Some(source),
+            Self::InvalidLogFilter { source, .. } | Self::InvalidTraceFilter { source, .. } => {
+                Some(source)
+            }
         }
     }
 }

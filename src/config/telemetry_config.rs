@@ -52,6 +52,7 @@ pub struct TelemetryConfig {
     pub(crate) sample_ratio: Option<f64>,
     pub(crate) metrics_interval: Option<Duration>,
     pub(crate) log_filter: Option<String>,
+    pub(crate) trace_filter: Option<String>,
     pub(crate) log_format: LogFormat,
     pub(crate) trust_incoming_trace: bool,
     pub(crate) panic_hook: bool,
@@ -79,6 +80,7 @@ impl TelemetryConfig {
             sample_ratio: None,
             metrics_interval: None,
             log_filter: None,
+            trace_filter: None,
             log_format: LogFormat::default(),
             trust_incoming_trace: false,
             panic_hook: true,
@@ -278,11 +280,25 @@ impl TelemetryConfig {
         self
     }
 
-    /// Sets the log filter, in `RUST_LOG` syntax (`info,sqlx=warn`).
+    /// Sets the log filter, in `RUST_LOG` syntax (`info,sqlx=warn`). It
+    /// applies to the log signal only: the stdout log lines and the exported
+    /// OTLP log records. Spans and metrics are gated by
+    /// [`trace_filter`](Self::trace_filter), so quietening the logs never
+    /// drops traces.
     ///
     /// Left unset, `RUST_LOG` is used, falling back to `info`.
     pub fn log_filter(mut self, directives: impl Into<String>) -> Self {
         self.log_filter = Some(directives.into());
+        self
+    }
+
+    /// Sets the filter for exported spans and `tracing`-field metrics, in
+    /// `RUST_LOG` syntax. Independent of [`log_filter`](Self::log_filter):
+    /// raising one never silences the other.
+    ///
+    /// Left unset, `TELEMETRY_TRACE_FILTER` is used, falling back to `info`.
+    pub fn trace_filter(mut self, directives: impl Into<String>) -> Self {
+        self.trace_filter = Some(directives.into());
         self
     }
 
@@ -334,8 +350,8 @@ impl TelemetryConfig {
     /// # Errors
     ///
     /// Fails, leaving every global untouched, when a global `tracing`
-    /// subscriber is already installed or the configured log filter does not
-    /// parse.
+    /// subscriber is already installed, or the configured log or trace
+    /// filter does not parse.
     pub fn try_init(self) -> Result<OtelGuard, InitError> {
         crate::init::try_init(self)
     }
@@ -596,10 +612,7 @@ mod tests {
     fn an_endpoint_set_after_the_overlay_wins_over_per_signal_variables() {
         let config = overlay(
             TelemetryConfig::new("svc"),
-            &[(
-                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-                "http://injected:4317",
-            )],
+            &[("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://injected:4317")],
         )
         .otlp_endpoint("http://collector:4317");
 

@@ -123,6 +123,7 @@ let guard = TelemetryConfig::new(env!("CARGO_PKG_NAME"))
     .metrics_interval(Duration::from_secs(30))
     .log_format(LogFormat::Json)
     .log_filter("info,sqlx=warn")
+    .trace_filter("info")
     .resource_attribute("cloud.region", "eu-west-1")
     .try_init()?;
 # drop(guard);
@@ -136,7 +137,7 @@ setters after it are overrides. `TelemetryConfig::new` alone reads none of the
 variables below.
 
 `init()` panics where `try_init()` returns an `InitError`: a global `tracing`
-subscriber is already installed, or the log filter does not parse. A failed
+subscriber is already installed, or the log or trace filter does not parse. A failed
 init leaves all global state untouched.
 
 A library cannot see the name or version of the binary it is linked into, which
@@ -171,11 +172,16 @@ Read during init, whenever the matching setting was left unset:
 
 | Variable                                         | Meaning                                                     |
 | ------------------------------------------------ | ----------------------------------------------------------- |
-| `RUST_LOG`                                       | Log filter. Defaults to `info`                              |
+| `RUST_LOG`                                       | Log filter: stdout lines and OTLP log records               |
+| `TELEMETRY_TRACE_FILTER`                         | Span and metric filter, independent of the log filter       |
 | `OTEL_PROPAGATORS`                               | `tracecontext`, `baggage` or `none`. Defaults to both       |
 | `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | Standard sampler selection. Defaults to sampling everything |
 | `OTEL_METRIC_EXPORT_INTERVAL`                    | Milliseconds between metric exports. Defaults to `60000`    |
 | `OTEL_RESOURCE_ATTRIBUTES`                       | Extra resource attributes, `key=value,key=value`            |
+
+Both filters use `RUST_LOG` syntax and default to `info`. They are
+independent: raising the log filter to quieten stdout never stops spans from
+being exported, and vice versa.
 
 The last three are read by the OpenTelemetry SDK itself, along with the batch
 processor tuning variables (`OTEL_BSP_*`, `OTEL_BLRP_*`) and the OTLP exporter's

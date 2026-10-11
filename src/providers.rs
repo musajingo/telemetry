@@ -15,9 +15,9 @@ use opentelemetry_sdk::{
     trace::{Sampler, SdkTracerProvider, TracerProviderBuilder},
 };
 
+use crate::config::{Exporter, TelemetryConfig};
 #[cfg(any(feature = "otlp-grpc", feature = "otlp-http"))]
 use crate::config::{Protocol, Signal, SignalTarget};
-use crate::config::{Exporter, TelemetryConfig};
 
 /// The providers behind one telemetry setup. A `None` means that signal is not
 /// exported.
@@ -259,6 +259,9 @@ mod tests {
             endpoint: "http://collector:4318".to_string(),
             exact: false,
         };
-        assert_eq!(http_url(&base, "v1/traces"), "http://collector:4318/v1/traces");
+        assert_eq!(
+            http_url(&base, "v1/traces"),
+            "http://collector:4318/v1/traces"
+        );
     }
 }

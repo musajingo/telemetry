@@ -42,10 +42,10 @@ pub fn try_init_telemetry(service_name: impl Into<String>) -> Result<OtelGuard, 
 }
 
 pub(crate) fn try_init(config: TelemetryConfig) -> Result<OtelGuard, InitError> {
-    let env_filter = env_filter(&config)?;
+    let filters = filters(&config)?;
     let providers = Providers::build(&config);
 
-    subscriber(&config, &providers, env_filter)
+    subscriber(&config, &providers, filters)
         .try_init()
         .map_err(|_| InitError::AlreadyInitialized)?;
 
@@ -76,63 +76,185 @@ pub(crate) fn try_init(config: TelemetryConfig) -> Result<OtelGuard, InitError> 
     })
 }
 
-/// Stacks the stdout log layer and one layer per active provider on a registry.
+/// An [`EnvFilter`] that gates events only: every span passes. On the log
+/// layers, a filtered-out span must still be visible so the lines that do
+/// pass keep their span context — the trace and span ids and the span fields.
+/// Rejecting the span at the filter would erase it from those layers' view.
+#[derive(Debug)]
+struct EventsOnly(EnvFilter);
+
+impl<S> tracing_subscriber::layer::Filter<S> for EventsOnly {
+    fn enabled(
+        &self,
+        metadata: &tracing::Metadata<'_>,
+        cx: &tracing_subscriber::layer::Context<'_, S>,
+    ) -> bool {
+        metadata.is_span() || tracing_subscriber::layer::Filter::<S>::enabled(&self.0, metadata, cx)
+    }
+
+    fn callsite_enabled(
+        &self,
+        metadata: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        // The inner filter is always consulted, even though every span
+        // passes: this is where it registers span callsites, without which
+        // its span-scoped directives (`[request]=info`) could never match.
+        let interest = tracing_subscriber::layer::Filter::<S>::callsite_enabled(&self.0, metadata);
+        if metadata.is_span() {
+            tracing::subscriber::Interest::always()
+        } else {
+            interest
+        }
+    }
+
+    fn event_enabled(
+        &self,
+        event: &tracing::Event<'_>,
+        cx: &tracing_subscriber::layer::Context<'_, S>,
+    ) -> bool {
+        tracing_subscriber::layer::Filter::<S>::event_enabled(&self.0, event, cx)
+    }
+
+    // The span lifecycle is forwarded so the inner filter can track which
+    // spans are current, which its span-scoped directives depend on.
+
+    fn on_new_span(
+        &self,
+        attrs: &tracing::span::Attributes<'_>,
+        id: &tracing::span::Id,
+        ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        tracing_subscriber::layer::Filter::<S>::on_new_span(&self.0, attrs, id, ctx);
+    }
+
+    fn on_record(
+        &self,
+        id: &tracing::span::Id,
+        values: &tracing::span::Record<'_>,
+        ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        tracing_subscriber::layer::Filter::<S>::on_record(&self.0, id, values, ctx);
+    }
+
+    fn on_enter(&self, id: &tracing::span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
+        tracing_subscriber::layer::Filter::<S>::on_enter(&self.0, id, ctx);
+    }
+
+    fn on_exit(&self, id: &tracing::span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
+        tracing_subscriber::layer::Filter::<S>::on_exit(&self.0, id, ctx);
+    }
+
+    fn on_close(&self, id: tracing::span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
+        tracing_subscriber::layer::Filter::<S>::on_close(&self.0, id, ctx);
+    }
+
+    // `max_level_hint` is deliberately not forwarded: the inner filter's hint
+    // (say WARN) would let the registry skip INFO spans for this layer.
+}
+
+/// The per-layer filters. The log signal and the trace/metric signals are
+/// gated separately, so quietening the stdout logs never drops telemetry.
+#[derive(Debug)]
+struct Filters {
+    /// Stdout log lines: the configured log filter, events only.
+    stdout: EventsOnly,
+    /// Exported OTLP log records: the same directives, own instance.
+    log_records: EventsOnly,
+    /// Exported spans: the configured trace filter.
+    spans: EnvFilter,
+    /// `tracing`-field metrics: the trace filter directives, own instance.
+    metrics: EnvFilter,
+}
+
+/// Builds every filter, so a directive that does not parse fails init before
+/// any global state is touched.
+fn filters(config: &TelemetryConfig) -> Result<Filters, InitError> {
+    // The configured log filter, else `RUST_LOG`, else `info`.
+    let log_directives = match &config.log_filter {
+        Some(directives) => directives.clone(),
+        None => std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()),
+    };
+    // The configured trace filter, else `TELEMETRY_TRACE_FILTER`, else `info`.
+    // Deliberately not `RUST_LOG`: raising it to quieten logs must not also
+    // stop spans from being exported.
+    let trace_directives = match &config.trace_filter {
+        Some(directives) => directives.clone(),
+        None => std::env::var("TELEMETRY_TRACE_FILTER").unwrap_or_else(|_| "info".to_string()),
+    };
+
+    let log_filter = |directives: &str| {
+        EnvFilter::try_new(directives).map_err(|source| InitError::InvalidLogFilter {
+            directives: directives.to_string(),
+            source,
+        })
+    };
+    let trace_filter = |directives: &str| {
+        EnvFilter::try_new(directives).map_err(|source| InitError::InvalidTraceFilter {
+            directives: directives.to_string(),
+            source,
+        })
+    };
+
+    Ok(Filters {
+        stdout: EventsOnly(log_filter(&log_directives)?),
+        log_records: EventsOnly(log_filter(&log_directives)?),
+        spans: trace_filter(&trace_directives)?,
+        metrics: trace_filter(&trace_directives)?,
+    })
+}
+
+/// Stacks the stdout log layer and one layer per active provider on a
+/// registry, each behind its signal's filter.
 fn subscriber(
     config: &TelemetryConfig,
     providers: &Providers,
-    env_filter: EnvFilter,
+    filters: Filters,
 ) -> impl tracing::Subscriber + Send + Sync + 'static {
-    let otel_layer = providers
-        .tracer
-        .as_ref()
-        .map(|provider| OpenTelemetryLayer::new(provider.tracer(config.service_name.clone())));
+    subscriber_with(config, providers, filters, std::io::stdout)
+}
+
+/// [`subscriber`] with the stdout log layer writing to the given writer, so
+/// tests can read the lines back.
+fn subscriber_with<W>(
+    config: &TelemetryConfig,
+    providers: &Providers,
+    filters: Filters,
+    make_writer: W,
+) -> impl tracing::Subscriber + Send + Sync + 'static
+where
+    W: for<'a> tracing_subscriber::fmt::MakeWriter<'a> + Send + Sync + 'static,
+{
+    let otel_layer = providers.tracer.as_ref().map(|provider| {
+        OpenTelemetryLayer::new(provider.tracer(config.service_name.clone()))
+            .with_filter(filters.spans)
+    });
     let metrics_layer = providers
         .meter
         .as_ref()
-        .map(|provider| MetricsLayer::new(provider.clone()));
+        .map(|provider| MetricsLayer::new(provider.clone()).with_filter(filters.metrics));
 
-    // The log exporter's own network stack logs through tracing. Without this
-    // filter those events re-enter the bridge and feed back on themselves.
+    // The log exporter's own network stack logs through tracing. Without the
+    // target filter those events re-enter the bridge and feed back on
+    // themselves.
     let log_bridge = providers.logger.as_ref().map(|provider| {
-        OpenTelemetryTracingBridge::new(provider).with_filter(
-            Targets::new()
-                .with_default(LevelFilter::TRACE)
-                .with_target("opentelemetry", LevelFilter::OFF)
-                .with_target("tonic", LevelFilter::OFF)
-                .with_target("hyper", LevelFilter::OFF)
-                .with_target("h2", LevelFilter::OFF)
-                .with_target("tower", LevelFilter::OFF),
-        )
+        OpenTelemetryTracingBridge::new(provider)
+            .with_filter(
+                Targets::new()
+                    .with_default(LevelFilter::TRACE)
+                    .with_target("opentelemetry", LevelFilter::OFF)
+                    .with_target("tonic", LevelFilter::OFF)
+                    .with_target("hyper", LevelFilter::OFF)
+                    .with_target("h2", LevelFilter::OFF)
+                    .with_target("tower", LevelFilter::OFF),
+            )
+            .with_filter(filters.log_records)
     });
 
-    // The env filter is global, so it also keeps the exporters' own events
-    // away from the OpenTelemetry layers unless they are asked for.
     tracing_subscriber::registry()
-        .with(env_filter)
-        .with(fmt_layer(config.log_format))
+        .with(fmt_layer_with(config.log_format, make_writer).with_filter(filters.stdout))
         .with(metrics_layer)
         .with(otel_layer)
         .with(log_bridge)
-}
-
-/// The configured filter, else `RUST_LOG`, else `info`.
-fn env_filter(config: &TelemetryConfig) -> Result<EnvFilter, InitError> {
-    match &config.log_filter {
-        Some(directives) => {
-            EnvFilter::try_new(directives).map_err(|source| InitError::InvalidLogFilter {
-                directives: directives.clone(),
-                source,
-            })
-        }
-        None => Ok(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))),
-    }
-}
-
-fn fmt_layer<S>(format: LogFormat) -> Box<dyn Layer<S> + Send + Sync>
-where
-    S: tracing::Subscriber + for<'a> LookupSpan<'a>,
-{
-    fmt_layer_with(format, std::io::stdout)
 }
 
 fn fmt_layer_with<S, W>(format: LogFormat, make_writer: W) -> Box<dyn Layer<S> + Send + Sync>
@@ -232,11 +354,8 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn log_records_carry_the_trace_id_of_the_span_they_were_emitted_in() {
-        let spans = InMemorySpanExporter::default();
-        let logs = InMemoryLogExporter::default();
-        let providers = Providers {
+    fn in_memory_providers(spans: &InMemorySpanExporter, logs: &InMemoryLogExporter) -> Providers {
+        Providers {
             tracer: Some(
                 SdkTracerProvider::builder()
                     .with_simple_exporter(spans.clone())
@@ -248,9 +367,154 @@ mod tests {
                     .with_simple_exporter(logs.clone())
                     .build(),
             ),
+        }
+    }
+
+    #[test]
+    fn the_log_filter_does_not_gate_spans() {
+        let spans = InMemorySpanExporter::default();
+        let logs = InMemoryLogExporter::default();
+        let providers = in_memory_providers(&spans, &logs);
+        // A service quietening its stdout logs must not lose its traces.
+        let config = TelemetryConfig::new("svc").log_filter("warn");
+        let subscriber = subscriber(
+            &config,
+            &providers,
+            filters(&config).expect("valid filters"),
+        );
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("work");
+            let _enter = span.enter();
+            tracing::info!("not a warning");
+        });
+
+        let finished = spans.get_finished_spans().expect("finished spans");
+        assert_eq!(finished.len(), 1, "the log filter does not apply to spans");
+        let records = logs.get_emitted_logs().expect("emitted logs");
+        assert_eq!(records.len(), 0, "the log filter applies to log records");
+    }
+
+    #[test]
+    fn the_trace_filter_gates_spans_independently() {
+        let spans = InMemorySpanExporter::default();
+        let logs = InMemoryLogExporter::default();
+        let providers = in_memory_providers(&spans, &logs);
+        let config = TelemetryConfig::new("svc")
+            .log_filter("info")
+            .trace_filter("warn");
+        let subscriber = subscriber(
+            &config,
+            &providers,
+            filters(&config).expect("valid filters"),
+        );
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("work");
+            let _enter = span.enter();
+            tracing::info!("still logged");
+        });
+
+        let finished = spans.get_finished_spans().expect("finished spans");
+        assert_eq!(finished.len(), 0, "the trace filter gates spans");
+        let records = logs.get_emitted_logs().expect("emitted logs");
+        assert_eq!(records.len(), 1, "the log filter is independent");
+    }
+
+    #[test]
+    fn span_scoped_log_directives_still_match() {
+        let spans = InMemorySpanExporter::default();
+        let logs = InMemoryLogExporter::default();
+        let providers = in_memory_providers(&spans, &logs);
+        // INFO is suppressed in general but allowed inside a `request` span.
+        let config = TelemetryConfig::new("svc")
+            .log_filter("warn,[request]=info")
+            .trace_filter("info");
+        let subscriber = subscriber(
+            &config,
+            &providers,
+            filters(&config).expect("valid filters"),
+        );
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!("outside any span");
+            let span = tracing::info_span!("request");
+            let _enter = span.enter();
+            tracing::info!("inside the request span");
+        });
+
+        let records = logs.get_emitted_logs().expect("emitted logs");
+        let bodies: Vec<String> = records
+            .iter()
+            .map(|log| format!("{:?}", log.record.body()))
+            .collect();
+        assert_eq!(bodies.len(), 1, "{bodies:?}");
+        assert!(bodies[0].contains("inside the request span"), "{bodies:?}");
+    }
+
+    #[test]
+    fn the_trace_filter_gates_tracing_field_metrics() {
+        use opentelemetry_sdk::metrics::{
+            InMemoryMetricExporter, PeriodicReader, SdkMeterProvider,
         };
-        let config = TelemetryConfig::new("svc");
-        let subscriber = subscriber(&config, &providers, EnvFilter::new("info"));
+
+        fn metrics_emitted(trace_filter: &str) -> bool {
+            let exporter = InMemoryMetricExporter::default();
+            let provider = SdkMeterProvider::builder()
+                .with_reader(PeriodicReader::builder(exporter.clone()).build())
+                .build();
+            let providers = Providers {
+                tracer: None,
+                meter: Some(provider.clone()),
+                logger: None,
+            };
+            let config = TelemetryConfig::new("svc")
+                .log_filter("info")
+                .trace_filter(trace_filter);
+            let subscriber = subscriber(
+                &config,
+                &providers,
+                filters(&config).expect("valid filters"),
+            );
+
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::info!(monotonic_counter.requests = 1_u64, "one request");
+            });
+
+            provider.force_flush().expect("flush metrics");
+            exporter
+                .get_finished_metrics()
+                .expect("finished metrics")
+                .iter()
+                .any(|resource_metrics| resource_metrics.scope_metrics().count() > 0)
+        }
+
+        assert!(metrics_emitted("info"), "an INFO metric event is exported");
+        assert!(
+            !metrics_emitted("warn"),
+            "the trace filter gates metric events"
+        );
+    }
+
+    #[test]
+    fn an_invalid_trace_filter_is_reported() {
+        let config = TelemetryConfig::new("svc").trace_filter("app=not-a-level");
+        let err = filters(&config).expect_err("filter should not parse");
+        assert!(matches!(err, InitError::InvalidTraceFilter { .. }), "{err}");
+        assert!(err.to_string().contains("app=not-a-level"), "{err}");
+    }
+
+    #[test]
+    fn log_records_carry_the_trace_id_of_the_span_they_were_emitted_in() {
+        let spans = InMemorySpanExporter::default();
+        let logs = InMemoryLogExporter::default();
+        let providers = in_memory_providers(&spans, &logs);
+        let config = TelemetryConfig::new("svc").log_filter("info");
+        let subscriber = subscriber(
+            &config,
+            &providers,
+            filters(&config).expect("valid filters"),
+        );
 
         let trace_id = tracing::subscriber::with_default(subscriber, || {
             let span = tracing::info_span!("work");
@@ -311,6 +575,58 @@ mod tests {
         }
 
         #[test]
+        fn a_quiet_log_filter_keeps_span_context_on_the_lines_it_lets_through() {
+            let buffer = Buffer::default();
+            let spans = InMemorySpanExporter::default();
+            let logs = InMemoryLogExporter::default();
+            let providers = in_memory_providers(&spans, &logs);
+            // The reviewer's repro: quiet logs, normal traces, JSON output.
+            let config = TelemetryConfig::new("svc")
+                .log_filter("warn")
+                .trace_filter("info")
+                .log_format(LogFormat::Json);
+            let subscriber = subscriber_with(
+                &config,
+                &providers,
+                filters(&config).expect("valid filters"),
+                buffer.clone(),
+            );
+
+            tracing::subscriber::with_default(subscriber, || {
+                let span = tracing::info_span!("request", method = "GET");
+                let _enter = span.enter();
+                tracing::warn!("something noteworthy");
+            });
+
+            let finished = spans.get_finished_spans().expect("finished spans");
+            assert_eq!(finished.len(), 1, "the INFO span is exported");
+            let trace_id = finished[0].span_context.trace_id().to_string();
+
+            // The WARN line that passed the log filter keeps the span context
+            // the filter would have hidden: the ids and the span fields.
+            let output = buffer.contents();
+            let line = output
+                .lines()
+                .find(|line| line.contains("something noteworthy"))
+                .expect("the WARN event was printed");
+            let json: serde_json::Value =
+                serde_json::from_str(line).expect("one JSON object per line");
+            assert_eq!(json["trace_id"].as_str(), Some(trace_id.as_str()), "{json}");
+            assert_eq!(json["span_id"].as_str().map(str::len), Some(16), "{json}");
+            assert_eq!(json["span"]["name"].as_str(), Some("request"), "{json}");
+            assert_eq!(json["span"]["method"].as_str(), Some("GET"), "{json}");
+
+            // The exported log record keeps its trace correlation too.
+            let records = logs.get_emitted_logs().expect("emitted logs");
+            assert_eq!(records.len(), 1, "only the WARN event is exported");
+            let context = records[0]
+                .record
+                .trace_context()
+                .expect("log record has a trace context");
+            assert_eq!(context.trace_id.to_string(), trace_id);
+        }
+
+        #[test]
         fn json_log_lines_carry_the_ids_of_the_active_trace() {
             let buffer = Buffer::default();
             let provider = SdkTracerProvider::builder()
@@ -349,8 +665,8 @@ mod tests {
         #[test]
         fn json_log_lines_omit_the_ids_without_a_tracer() {
             let buffer = Buffer::default();
-            let subscriber =
-                tracing_subscriber::registry().with(fmt_layer_with(LogFormat::Json, buffer.clone()));
+            let subscriber = tracing_subscriber::registry()
+                .with(fmt_layer_with(LogFormat::Json, buffer.clone()));
 
             tracing::subscriber::with_default(subscriber, || {
                 let span = tracing::info_span!("work");
@@ -374,7 +690,7 @@ mod tests {
     #[test]
     fn an_invalid_log_filter_is_reported() {
         let config = TelemetryConfig::new("svc").log_filter("app=not-a-level");
-        let err = env_filter(&config).expect_err("filter should not parse");
+        let err = filters(&config).expect_err("filter should not parse");
         assert!(matches!(err, InitError::InvalidLogFilter { .. }), "{err}");
         assert!(err.to_string().contains("app=not-a-level"), "{err}");
     }
